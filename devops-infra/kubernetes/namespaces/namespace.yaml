@@ -1,0 +1,9 @@
+# Application Namespace
+# Defines the namespace for all application resources
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aks-data-structures
+  labels:
+    app.kubernetes.io/name: aks-data-structures
+    app.kubernetes.io/managed-by: kubectl

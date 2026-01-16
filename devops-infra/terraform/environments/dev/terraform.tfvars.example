@@ -1,0 +1,27 @@
+# Development Environment Variable Values
+# Customize these values for your dev environment
+
+# General
+project_name = "aks-data-structures"
+aws_region   = "us-east-1"
+
+# Kubernetes
+kubeconfig_path = "~/.kube/config"
+kube_context    = "minikube"
+namespace       = "default"
+
+# Networking
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# Application - Development settings (lower resource usage)
+frontend_replicas = 2
+backend_replicas  = 2
+frontend_image    = "ui-service:latest"
+backend_image     = "backend-service:latest"
+
+# Database - Disabled for local development
+enable_rds        = false
+db_instance_class = "db.t3.micro"
+db_name           = "appdb_dev"
+db_username       = "admin"

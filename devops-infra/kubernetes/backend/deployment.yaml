@@ -1,0 +1,115 @@
+# Backend Deployment
+# Enhanced deployment with resource limits, probes, and environment configuration
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-deployment
+  labels:
+    app: backend
+    tier: api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: backend
+        image: backend-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+          name: http
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        env:
+        - name: FLASK_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: FLASK_ENV
+        - name: PORT
+          value: "5000"
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LOG_LEVEL
+        - name: STACK_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: STACK_URL
+        - name: LINKEDLIST_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LINKEDLIST_URL
+        - name: GRAPH_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: GRAPH_URL
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: DATABASE_URL
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: SECRET_KEY
+        - name: STACK_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: STACK_SERVICE_URL
+        - name: LINKEDLIST_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: LINKEDLIST_SERVICE_URL
+        - name: GRAPH_SERVICE_URL
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: GRAPH_SERVICE_URL
+        - name: PROMETHEUS_MULTIPROC_DIR
+          value: "/tmp"
+

@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graph-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: graph
+  template:
+    metadata:
+      labels:
+        app: graph
+    spec:
+      containers:
+      - name: graph
+        image: graph-service:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+        env:
+        - name: DB_HOST
+          value: "postgres-service"
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: DB_NAME
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: DB_USER
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: backend-secrets
+              key: DB_PASSWORD
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "250m"
+            memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graph-service
+spec:
+  type: ClusterIP
+  selector:
+    app: graph
+  ports:
+    - port: 5003
+      targetPort: 5000

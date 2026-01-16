@@ -1,0 +1,16 @@
+# Database Persistent Volume Claim
+# Standalone PVC for database storage (if not using StatefulSet volumeClaimTemplates)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  labels:
+    app: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uncomment and specify storageClassName for production
+  # storageClassName: gp2

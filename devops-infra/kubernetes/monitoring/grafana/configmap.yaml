@@ -1,0 +1,53 @@
+# Grafana ConfigMaps
+# Datasources, dashboard provider, and secrets
+---
+# Prometheus Datasource
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  labels:
+    app: grafana
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-service:9090/prometheus
+        isDefault: true
+        editable: false
+---
+# Dashboard Provider Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-provider
+  labels:
+    app: grafana
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'default'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        options:
+          path: /var/lib/grafana/dashboards
+---
+# Grafana Secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-secrets
+  labels:
+    app: grafana
+type: Opaque
+data:
+  # Default password: admin123
+  # echo -n 'admin123' | base64
+  admin-password: YWRtaW4xMjM=

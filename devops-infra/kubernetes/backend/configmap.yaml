@@ -1,0 +1,34 @@
+# Backend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  labels:
+    app: backend
+data:
+  # Application Configuration
+  FLASK_ENV: "production"
+  LOG_LEVEL: "INFO"
+  
+  # Data Structure Service URLs
+  STACK_SERVICE_URL: "http://stack-service:5001"
+  LINKEDLIST_SERVICE_URL: "http://linkedlist-service:5002"
+  GRAPH_SERVICE_URL: "http://graph-service:5003"
+  # Aliases expected by app
+  STACK_URL: "http://stack-service:5001"
+  LINKEDLIST_URL: "http://linkedlist-service:5002"
+  GRAPH_URL: "http://graph-service:5003"
+  
+  # Database Configuration (host from service)
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "appdb"
+  
+  # CORS Configuration
+  CORS_ORIGINS: "*"
+  
+  # Rate Limiting
+  RATE_LIMIT_PER_MINUTE: "100"
+  
+  # Environment
+  ENVIRONMENT: "dev"

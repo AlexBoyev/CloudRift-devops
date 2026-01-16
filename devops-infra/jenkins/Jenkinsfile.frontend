@@ -1,0 +1,197 @@
+// Frontend Build and Deploy Pipeline
+// Handles building, testing, and deploying the frontend service
+// Uses SSH to connect to EC2 and run commands there
+
+pipeline {
+    agent any
+    
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+    
+    parameters {
+        string(
+            name: 'BRANCH_NAME',
+            defaultValue: 'main',
+            description: 'Git branch to build'
+        )
+        string(
+            name: 'FRONTEND_REPO_URL',
+            defaultValue: 'github.com/simple-ec2-deployment/new-frontend.git',
+            description: 'Frontend UI repo URL'
+        )
+        string(
+            name: 'MINIKUBE_PROFILE',
+            defaultValue: 'minikube',
+            description: 'Minikube profile name'
+        )
+    }
+    
+    environment {
+        BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
+        GITHUB_PAT = credentials('github-pat-token')
+        EC2_SSH_KEY = credentials('ec2-ssh-key')
+        EC2_USER = 'ubuntu'
+        EC2_HOST = credentials('ec2-host-ip')
+        FRONTEND_DIR = '/home/ubuntu/frontend'
+        REPO_DIR = '/home/ubuntu/new-devops-local'
+        FRONTEND_REPO_URL = "${params.FRONTEND_REPO_URL}"
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+    }
+    
+    stages {
+        stage('Clone Frontend Repo to EC2') {
+            steps {
+                script {
+                    echo "==========================================="
+                    echo "Frontend Pipeline - Cloning repository"
+                    echo "Branch: ${params.BRANCH_NAME}"
+                    echo "==========================================="
+                }
+                
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' FRONTEND_REPO='${FRONTEND_REPO_URL}' FRONTEND_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+FULL_URL="$(normalize_url "$FRONTEND_REPO")"
+echo "Cloning frontend repo: $FULL_URL"
+
+if [ -n "${GITHUB_PASS:-}" ]; then
+  TOKEN="$GITHUB_PASS"
+else
+  TOKEN="$GITHUB_PAT"
+fi
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$FRONTEND_DIR/.git" ]; then
+  mkdir -p "$FRONTEND_DIR"
+  echo "Cloning repository from branch: $BRANCH..."
+  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$FRONTEND_DIR"
+else
+  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  cd "$FRONTEND_DIR"
+  git config --global --add safe.directory "$FRONTEND_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+    echo "Pull failed, trying to reset..."
+    git fetch --all
+    git reset --hard "origin/$BRANCH"
+  }
+fi
+
+cd "$FRONTEND_DIR"
+echo "Current branch: $(git branch --show-current)"
+echo "Latest commit:  $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Build Docker Image on EC2') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+set -euo pipefail
+
+cd "$FRONTEND_DIR"
+
+# Point Docker to Minikube daemon
+eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
+
+# Remove old tags (keep only latest)
+docker images ui-service --format '{{.Repository}}:{{.Tag}}' | grep '^ui-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
+docker image prune -f || true
+
+echo "Building Docker image: ui-service:latest"
+docker build -t ui-service:latest .
+
+echo "✓ Docker image built successfully (only latest retained)"
+docker images ui-service
+SCRIPT
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Kubernetes on EC2') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            REPO_DIR='${REPO_DIR}'
+                            MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            
+                            cd \\${REPO_DIR}
+                            
+                            # Ensure kubectl context is set
+                            kubectl config use-context \\${MINIKUBE_PROFILE} || true
+                            
+                            # Apply Kubernetes manifests
+                            kubectl apply -f devops-infra/kubernetes/frontend/configmap.yaml || true
+                            kubectl apply -f devops-infra/kubernetes/frontend/deployment.yaml || true
+                            kubectl apply -f devops-infra/kubernetes/frontend/service.yaml || true
+                            kubectl apply -f devops-infra/kubernetes/frontend/hpa.yaml || true
+                            
+                            # Wait for rollout
+                            kubectl rollout status deployment/frontend-deployment --timeout=300s || true
+                            
+                            echo '✓ Frontend deployed successfully'
+                        "
+                    '''
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            # Wait for pods to be ready
+                            kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s || true
+                            
+                            # Get pod status
+                            echo ''
+                            echo '=== Frontend Pods ==='
+                            kubectl get pods -l app=frontend -o wide
+                            
+                            echo '✓ Health check passed'
+                        "
+                    '''
+                }
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo "=========================================="
+            echo "✓ Frontend Pipeline completed successfully!"
+            echo "=========================================="
+        }
+        failure {
+            echo "✗ Frontend Pipeline failed!"
+        }
+    }
+}

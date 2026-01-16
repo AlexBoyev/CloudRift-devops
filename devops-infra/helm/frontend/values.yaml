@@ -1,0 +1,97 @@
+# Default values for frontend
+# This is a YAML-formatted file.
+
+# Environment configuration
+environment: "dev"  # dev, prod
+
+replicaCount: 1
+
+image:
+  repository: ui-service
+  pullPolicy: Never
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    kubernetes.io/ingress.class: nginx
+  hosts:
+    - host: ""
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 2
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Application-specific configuration
+config:
+  apiUrl: "http://backend-service:5000/api"
+  enableAnalytics: false
+  appName: "AKS Data Structures"
+  theme: "dark"
+  environment: "dev"  # Will be overridden by environment value
+
+# Feature toggles
+features:
+  enableAnalytics: false
+  showEnvironment: true  # Display environment in UI
+  showDatabaseInfo: false  # Feature toggle for database info display
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3

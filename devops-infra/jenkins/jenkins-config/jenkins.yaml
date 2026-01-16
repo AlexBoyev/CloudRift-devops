@@ -1,0 +1,64 @@
+jenkins:
+  systemMessage: "Jenkins configured automatically for AKS Data Structures DevOps"
+  numExecutors: 2
+  mode: NORMAL
+  scmCheckoutRetryCount: 3
+  
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: admin123
+          
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+  remotingSecurity:
+    enabled: true
+
+unclassified:
+  location:
+    adminAddress: "admin@example.com"
+    url: "http://localhost:8080/"
+
+  gitSCM:
+    createAccountBasedOnEmail: false
+    showEntireCommitSummaryInChanges: false
+    useExistingAccountWithSameEmail: false
+
+  globalLibraries:
+    libraries:
+      - name: "shared-library"
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://github.com/simple-ec2-deployment/new-devops-local.git"
+
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "/usr/bin/git"
+        
+  nodejs:
+    installations:
+      - name: "NodeJS 18"
+        properties:
+          - installSource:
+              installers:
+                - nodeJSInstaller:
+                    id: "18.19.0"
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-credentials"
+              username: "admin"
+              password: "admin123"
+              description: "GitHub credentials for repository access"

@@ -1,0 +1,17 @@
+# Frontend ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-config
+  labels:
+    app: frontend
+data:
+  # Backend API URL - update based on environment
+  API_URL: "http://backend-service:5000/api"
+  
+  # Feature flags
+  ENABLE_ANALYTICS: "false"
+  
+  # UI Configuration
+  APP_NAME: "AKS Data Structures"
+  THEME: "dark"

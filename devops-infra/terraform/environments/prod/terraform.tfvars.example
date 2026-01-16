@@ -1,0 +1,27 @@
+# Production Environment Variable Values
+# Customize these values for your production environment
+
+# General
+project_name = "aks-data-structures"
+aws_region   = "us-east-1"
+
+# Kubernetes - Update with your production cluster context
+kubeconfig_path = "~/.kube/config"
+kube_context    = "eks-production"
+namespace       = "production"
+
+# Networking - Production VPC settings
+vpc_cidr           = "10.1.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+
+# Application - Production settings (higher availability)
+frontend_replicas = 3
+backend_replicas  = 3
+frontend_image    = "your-ecr-repo/ui-service:v1.0.0"
+backend_image     = "your-ecr-repo/backend-service:v1.0.0"
+
+# Database - Enabled for production
+enable_rds        = true
+db_instance_class = "db.t3.small"
+db_name           = "appdb_prod"
+db_username       = "admin"

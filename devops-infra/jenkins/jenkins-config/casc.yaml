@@ -1,0 +1,350 @@
+jenkins:
+  systemMessage: "Jenkins - AKS Data Structures DevOps Platform (Fully Automated Setup)"
+  numExecutors: 2
+  mode: NORMAL
+  scmCheckoutRetryCount: 3
+  
+  # Security Configuration
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${ADMIN_PASSWORD:-admin123}"
+        - id: "developer"
+          password: "${DEV_PASSWORD:-dev123}"
+          
+  authorizationStrategy:
+    roleBased:
+      roles:
+        global:
+          - name: "admin"
+            description: "Jenkins administrators"
+            permissions:
+              - "Overall/Administer"
+            assignments:
+              - "admin"
+          - name: "developer"
+            description: "Jenkins developers"
+            permissions:
+              - "Overall/Read"
+              - "Job/Build"
+              - "Job/Cancel"
+              - "Job/Read"
+              - "Job/Workspace"
+              - "View/Read"
+            assignments:
+              - "developer"
+
+  # Global Security Settings
+  remotingSecurity:
+    enabled: true
+    
+  # Disable CLI over remoting
+  globalNodeProperties:
+    - envVars:
+        env:
+          - key: "DOCKER_HOST"
+            value: "unix:///var/run/docker.sock"
+
+# Tool Configuration
+tool:
+  git:
+    installations:
+      - name: "Default"
+        home: "/usr/bin/git"
+        
+  nodejs:
+    installations:
+      - name: "NodeJS-18"
+        properties:
+          - installSource:
+              installers:
+                - nodeJSInstaller:
+                    id: "18.19.0"
+                    
+  dockerTool:
+    installations:
+      - name: "Docker"
+        properties:
+          - installSource:
+              installers:
+                - fromDocker:
+                    version: "latest"
+
+# Global Configuration
+unclassified:
+  location:
+    adminAddress: "admin@example.com"
+    url: "${JENKINS_URL:-http://localhost:8080/}"
+    
+  # Git SCM Configuration
+  gitSCM:
+    createAccountBasedOnEmail: false
+    showEntireCommitSummaryInChanges: false
+    useExistingAccountWithSameEmail: false
+    
+  # Global Libraries
+  globalLibraries:
+    libraries:
+      - name: "shared-library"
+        retriever:
+          modernSCM:
+            scm:
+              git:
+                remote: "https://github.com/simple-ec2-deployment/new-devops-local.git"
+                
+  # Docker Configuration
+  docker:
+    dockerhosts:
+      - uri: "unix:///var/run/docker.sock"
+
+# Security Settings
+security:
+  queueItemAuthenticator:
+    authenticators:
+      - global:
+          strategy: triggeringUsersAuthorizationStrategy
+          
+# Credentials Configuration
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-credentials"
+              username: "${GITHUB_USERNAME:-admin}"
+              password: "${GITHUB_TOKEN:-admin123}"
+              description: "GitHub credentials for repository access"
+          - string:
+              scope: GLOBAL
+              id: "docker-hub-token"
+              secret: "${DOCKER_HUB_TOKEN:-dummy-token}"
+              description: "Docker Hub access token"
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "ssh-key"
+              username: "jenkins"
+              privateKeySource:
+                directEntry:
+                  privateKey: "${SSH_PRIVATE_KEY:-dummy-key}"
+              description: "SSH key for server access"
+
+# Job DSL Configuration - Automated Pipeline Creation
+jobs:
+  - script: >
+      // Create Frontend Pipeline
+      pipelineJob('frontend-pipeline') {
+        displayName('Frontend CI/CD Pipeline')
+        description('Automated pipeline for frontend application')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/simple-ec2-deployment/new-frontend.git')
+                  credentials('github-credentials')
+                }
+                branches('*/main')
+                scriptPath('Jenkinsfile')
+              }
+            }
+          }
+        }
+        triggers {
+          githubPush()
+        }
+      }
+
+      // Create Backend Pipeline
+      pipelineJob('backend-pipeline') {
+        displayName('Backend CI/CD Pipeline')
+        description('Automated pipeline for backend API')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/simple-ec2-deployment/new-backend.git')
+                  credentials('github-credentials')
+                }
+                branches('*/main')
+                scriptPath('Jenkinsfile')
+              }
+            }
+          }
+        }
+        triggers {
+          githubPush()
+        }
+      }
+
+      // Create Infrastructure Pipeline
+      pipelineJob('infrastructure-pipeline') {
+        displayName('Infrastructure Deployment Pipeline')
+        description('Automated pipeline for infrastructure deployment')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/simple-ec2-deployment/new-devops-local.git')
+                  credentials('github-credentials')
+                }
+                branches('*/main')
+                scriptPath('Jenkinsfile-EC2')
+              }
+            }
+          }
+        }
+      }
+
+      // Create Data Structures Services Pipeline
+      pipelineJob('data-structures-pipeline') {
+        displayName('Data Structures Services Pipeline')
+        description('Pipeline for stack, linkedlist, and graph services')
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/simple-ec2-deployment/new-devops-local.git')
+                  credentials('github-credentials')
+                }
+                branches('*/main')
+                scriptPath('devops-infra/jenkins/Jenkinsfile.data-structures')
+              }
+            }
+          }
+        }
+      }
+
+      // Create Multi-branch Pipeline for all repositories
+      multibranchPipelineJob('aks-platform-multibranch') {
+        displayName('AKS Platform - Multi-branch Pipeline')
+        description('Multi-branch pipeline covering all project repositories')
+        branchSources {
+          github {
+            id('aks-platform')
+            scanCredentialsId('github-credentials')
+            repoOwner('simple-ec2-deployment')
+            repository('new-devops-local')
+          }
+        }
+        orphanedItemStrategy {
+          discardOldItems {
+            numToKeep(20)
+          }
+        }
+      }
+
+      // Create Folder for organizing jobs
+      folder('AKS-Platform') {
+        displayName('AKS Data Structures Platform')
+        description('All pipelines related to AKS Data Structures project')
+      }
+
+      // Move jobs into folder (restructured approach)
+      pipelineJob('AKS-Platform/frontend-build') {
+        displayName('Frontend Build & Deploy')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                tools {
+                  nodejs 'NodeJS-18'
+                }
+                stages {
+                  stage('Checkout') {
+                    steps {
+                      git branch: 'main',
+                          credentialsId: 'github-credentials',
+                          url: 'https://github.com/simple-ec2-deployment/new-frontend.git'
+                    }
+                  }
+                  stage('Install Dependencies') {
+                    steps {
+                      sh 'npm install'
+                    }
+                  }
+                  stage('Build') {
+                    steps {
+                      sh 'npm run build'
+                    }
+                  }
+                  stage('Test') {
+                    steps {
+                      sh 'npm test -- --coverage --watchAll=false'
+                    }
+                  }
+                  stage('Docker Build') {
+                    steps {
+                      script {
+                        def image = docker.build("ui-service:${BUILD_NUMBER}")
+                        image.tag("latest")
+                      }
+                    }
+                  }
+                  stage('Deploy to K8s') {
+                    steps {
+                      sh 'kubectl apply -f k8s/frontend/'
+                      sh 'kubectl rollout restart deployment/frontend-deployment'
+                    }
+                  }
+                }
+                post {
+                  always {
+                    cleanWs()
+                  }
+                }
+              }
+            ''')
+            sandbox()
+          }
+        }
+      }
+
+      pipelineJob('AKS-Platform/backend-build') {
+        displayName('Backend Build & Deploy')
+        definition {
+          cps {
+            script('''
+              pipeline {
+                agent any
+                stages {
+                  stage('Checkout') {
+                    steps {
+                      git branch: 'main',
+                          credentialsId: 'github-credentials',
+                          url: 'https://github.com/simple-ec2-deployment/new-backend.git'
+                    }
+                  }
+                  stage('Build') {
+                    steps {
+                      sh 'pip install -r requirements.txt'
+                      sh 'python -m pytest tests/'
+                    }
+                  }
+                  stage('Docker Build') {
+                    steps {
+                      script {
+                        def image = docker.build("backend-service:${BUILD_NUMBER}")
+                        image.tag("latest")
+                      }
+                    }
+                  }
+                  stage('Deploy to K8s') {
+                    steps {
+                      sh 'kubectl apply -f k8s/backend/'
+                      sh 'kubectl rollout restart deployment/backend-deployment'
+                    }
+                  }
+                }
+              }
+            ''')
+            sandbox()
+          }
+        }
+      }

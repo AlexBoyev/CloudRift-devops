@@ -33,4 +33,5 @@ module "ec2" {
   private_filename = var.private_filename
   public_filename  = var.public_filename
   key_name         = var.key_name
+  owner            = var.owner
 }

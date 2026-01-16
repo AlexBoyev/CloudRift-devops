@@ -35,7 +35,7 @@ unclassified:
           modernSCM:
             scm:
               git:
-                remote: "https://github.com/simple-ec2-deployment/new-devops-local.git"
+                remote: "https://github.com/AlexBoyev/CloudRift-devops.git"
 
 tool:
   git:

@@ -151,9 +151,9 @@ REPO_DIR="${TARGET_HOME}/new-devops-local"
 load_env_if_present "${TARGET_HOME}/.env"
 load_env_if_present "${REPO_DIR}/.env"
 
-DEVOPS_REPO_URL="${DEVOPS_REPO_URL:-https://github.com/simple-ec2-deployment/new-devops-local.git}"
-BACKEND_REPO_URL="${BACKEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-backend.git}"
-FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-frontend.git}"
+DEVOPS_REPO_URL="${DEVOPS_REPO_URL:-https://github.com/AlexBoyev/CloudRift-devops.git}"
+BACKEND_REPO_URL="${BACKEND_REPO_URL:-https://github.com/AlexBoyev/CloudRift-backend.git}"
+FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/AlexBoyev/CloudRift-frontend.git}"
 REPO_URL_BASE="$(echo "$DEVOPS_REPO_URL" | sed -E 's|^https?://||')"
 
 PAT_VALUE="${GIT_PAT:-}"

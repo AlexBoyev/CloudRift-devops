@@ -68,3 +68,8 @@ variable "root_volume_size" {
   type    = number
   default = 30
 }
+
+variable "owner" {
+  type    = string
+  default = "terraform_ec2_deployment"
+}

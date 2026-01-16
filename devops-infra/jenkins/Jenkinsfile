@@ -19,17 +19,17 @@ pipeline {
         )
         string(
             name: 'INFRA_REPO_URL',
-            defaultValue: 'github.com/simple-ec2-deployment/new-devops-local.git',
+            defaultValue: 'github.com/AlexBoyev/CloudRift-devops.git',
             description: 'Infrastructure repo (k8s manifests, terraform, Jenkinsfile)'
         )
         string(
             name: 'API_REPO_URL',
-            defaultValue: 'github.com/simple-ec2-deployment/new-backend.git',
+            defaultValue: 'github.com/AlexBoyev/CloudRift-backend.git',
             description: 'Repo containing backend API service'
         )
         string(
             name: 'FRONTEND_REPO_URL',
-            defaultValue: 'github.com/simple-ec2-deployment/new-frontend.git',
+            defaultValue: 'github.com/AlexBoyev/CloudRift-frontend.git',
             description: 'Repo containing frontend UI service'
         )
         booleanParam(

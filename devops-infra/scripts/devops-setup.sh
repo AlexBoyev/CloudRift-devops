@@ -39,9 +39,9 @@ SKIP_BUILD="${4:-false}"
 GITHUB_USER="${GITHUB_USER:-${GIT_USERNAME:-}}"
 GITHUB_PAT="${GITHUB_PAT:-${GIT_PAT:-}}"
 # Repo URLs (can be overridden via env)
-DEVOPS_REPO_URL="${DEVOPS_REPO_URL:-https://github.com/simple-ec2-deployment/new-devops-local.git}"
-API_REPO_URL="${API_REPO_URL:-https://github.com/simple-ec2-deployment/new-backend.git}"
-FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-frontend.git}"
+DEVOPS_REPO_URL="${DEVOPS_REPO_URL:-https://github.com/AlexBoyev/CloudRift-devops.git}"
+API_REPO_URL="${API_REPO_URL:-https://github.com/AlexBoyev/CloudRift-backend.git}"
+FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/AlexBoyev/CloudRift-frontend.git}"
 export GIT_TERMINAL_PROMPT=0
 export GIT_ASKPASS=true
 

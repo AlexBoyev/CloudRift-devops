@@ -1,6 +1,6 @@
 
 region     = "us-east-1"
-account_id = "992382821183"
+account_id = "160885291049"
 
 environment = "dev"
 project     = "stack"
@@ -31,7 +31,7 @@ availability_zones = [
 ami           = "ami-0ecb62995f68bb549"
 instance_name = "stack-Host"
 
-instance_type    = "t2.medium"
+instance_type    = "t3.medium"
 algorithm        = "RSA"
 rsa              = 2048
 key_name         = "stack-key"

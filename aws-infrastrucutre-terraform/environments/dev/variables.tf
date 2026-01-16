@@ -94,3 +94,8 @@ variable "security_groups" {
     })),
   }))
 }
+
+variable "owner" {
+  type    = string
+  default = "terraform_ec2_deployment"
+}

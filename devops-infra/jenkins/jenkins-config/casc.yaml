@@ -92,7 +92,7 @@ unclassified:
           modernSCM:
             scm:
               git:
-                remote: "https://github.com/simple-ec2-deployment/new-devops-local.git"
+                remote: "https://github.com/AlexBoyev/CloudRift-devops.git"
                 
   # Docker Configuration
   docker:
@@ -189,7 +189,7 @@ jobs:
             scm {
               git {
                 remote {
-                  url('https://github.com/simple-ec2-deployment/new-devops-local.git')
+                  url('https://github.com/AlexBoyev/CloudRift-devops.git')
                   credentials('github-credentials')
                 }
                 branches('*/main')
@@ -209,7 +209,7 @@ jobs:
             scm {
               git {
                 remote {
-                  url('https://github.com/simple-ec2-deployment/new-devops-local.git')
+                  url('https://github.com/AlexBoyev/CloudRift-devops.git')
                   credentials('github-credentials')
                 }
                 branches('*/main')

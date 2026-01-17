@@ -132,5 +132,5 @@ security_groups = [
 devops_repo_url   = "https://github.com/AlexBoyev/CloudRift-devops.git"
 backend_repo_url  = "https://github.com/AlexBoyev/CloudRift-backend.git"
 frontend_repo_url = "https://github.com/AlexBoyev/CloudRift-frontend.git"
-git_username      = "AlexBoyev"
-git_pat           = "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"
+git_username      = ""
+git_pat           = ""

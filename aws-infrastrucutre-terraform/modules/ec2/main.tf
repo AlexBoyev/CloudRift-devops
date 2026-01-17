@@ -31,14 +31,14 @@ resource "tls_private_key" "stack_key" {
   rsa_bits  = var.rsa
 }
 
-# FIX: Uses path provided by root variable
+# Uses path provided by root variable
 resource "local_file" "private_key" {
   content         = tls_private_key.stack_key.private_key_pem
   filename        = var.private_filename
   file_permission = "0400"
 }
 
-# FIX: Uses path provided by root variable
+# Uses path provided by root variable
 resource "local_file" "public_key" {
   content         = tls_private_key.stack_key.public_key_openssh
   filename        = var.public_filename
@@ -74,7 +74,6 @@ resource "aws_launch_template" "this" {
     }
   }
 
-  # FIX: Merges Project, Owner, Environment into tags
   tag_specifications {
     resource_type = "instance"
     tags = merge(var.tags, {
@@ -126,9 +125,6 @@ resource "aws_instance" "this" {
 ########################################
 # Bootstrap provisioning
 ########################################
-########################################
-# Bootstrap provisioning
-########################################
 resource "null_resource" "bootstrap" {
   depends_on = [aws_instance.this]
 
@@ -151,7 +147,7 @@ resource "null_resource" "bootstrap" {
     destination = "/home/${var.ssh_user}/bootstrap.sh"
   }
 
-provisioner "remote-exec" {
+  provisioner "remote-exec" {
     inline = [
       "sleep 30",
 
@@ -182,4 +178,5 @@ provisioner "remote-exec" {
       "echo '--- RUNNING DEVOPS SETUP ---'",
       "sudo -E devops-infra/scripts/devops-setup.sh dev true false false"
     ]
+  }
 }

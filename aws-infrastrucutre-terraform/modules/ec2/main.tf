@@ -151,15 +151,16 @@ resource "null_resource" "bootstrap" {
     destination = "/home/${var.ssh_user}/bootstrap.sh"
   }
 
-  provisioner "remote-exec" {
+provisioner "remote-exec" {
     inline = [
-      # 1. Wait for instance to be ready
       "sleep 30",
 
-      # 2. Make script executable
+      # FIX: Remove Windows line endings from bootstrap.sh before running it
+      "sed -i 's/\r$//' /home/${var.ssh_user}/bootstrap.sh",
+
       "chmod +x /home/${var.ssh_user}/bootstrap.sh",
 
-      # 3. Export variables (using nonsensitive to allow log printing)
+      # Export variables
       "export DEVOPS_REPO_URL='${var.devops_repo_url}'",
       "export BACKEND_REPO_URL='${var.backend_repo_url}'",
       "export API_REPO_URL='${var.backend_repo_url}'",
@@ -167,21 +168,18 @@ resource "null_resource" "bootstrap" {
       "export GIT_USERNAME='${var.git_username}'",
       "export GIT_PAT='${nonsensitive(var.git_pat)}'",
 
-      # 4. Debug: Print that we are starting
       "echo '--- STARTING BOOTSTRAP ---'",
 
-      # 5. Run bootstrap.sh with sudo -E to keep env vars
       "sudo -E /home/${var.ssh_user}/bootstrap.sh",
 
-      # 6. Check if directory exists before cd
       "if [ -d \"/home/${var.ssh_user}/new-devops-local\" ]; then cd /home/${var.ssh_user}/new-devops-local; else echo 'Directory not found' && exit 1; fi",
 
-      # 7. Make devops-setup.sh executable
+      # FIX: Sanitize the next script too, just in case
+      "if [ -f devops-infra/scripts/devops-setup.sh ]; then sed -i 's/\r$//' devops-infra/scripts/devops-setup.sh; fi",
+
       "chmod +x devops-infra/scripts/devops-setup.sh",
 
-      # 8. Run the setup script
       "echo '--- RUNNING DEVOPS SETUP ---'",
       "sudo -E devops-infra/scripts/devops-setup.sh dev true false false"
     ]
   }
-}

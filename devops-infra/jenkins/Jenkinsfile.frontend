@@ -19,7 +19,7 @@ pipeline {
         )
         string(
             name: 'FRONTEND_REPO_URL',
-            defaultValue: 'github.com/simple-ec2-deployment/new-frontend.git',
+            defaultValue: 'github.com/AlexBoyev/CloudRift-frontend.git',
             description: 'Frontend UI repo URL'
         )
         string(

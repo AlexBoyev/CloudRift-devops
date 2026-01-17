@@ -188,26 +188,21 @@ plan_terraform() {
 # Apply infrastructure
 apply_terraform() {
     print_header "Step 5: Applying Infrastructure"
-    
+
     print_warning "This will create AWS resources and may incur costs."
-    read -p "Do you want to proceed with terraform apply? (y/n): " -n 1 -r
-    echo
-    
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        print_info "Running: terraform apply -auto-approve"
-        terraform apply -auto-approve
-        
-        if [ $? -eq 0 ]; then
-            print_success "Infrastructure created successfully!"
-        else
-            print_error "Infrastructure creation failed"
-            exit 1
-        fi
+    print_info "Running: terraform apply -auto-approve"
+
+    terraform apply -auto-approve
+    rc=$?
+
+    if [ $rc -eq 0 ]; then
+        print_success "Infrastructure created successfully!"
     else
-        print_warning "Terraform apply cancelled by user"
-        exit 0
+        print_error "Infrastructure creation failed"
+        exit 1
     fi
 }
+
 
 # Display outputs
 show_outputs() {

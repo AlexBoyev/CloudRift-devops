@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set -x # CRITICAL: Prints every command to Terraform logs for debugging
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log()  { printf "${GREEN}[BOOTSTRAP]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[WARN]${NC} %s\n" "$*"; }
 err()  { printf "${RED}[ERROR]${NC} %s\n" "$*" >&2; }
+
+# Prevent interactive prompts during install
+export DEBIAN_FRONTEND=noninteractive
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -12,13 +16,28 @@ need_cmd() { command -v "$1" >/dev/null 2>&1; }
 TARGET_USER="${SUDO_USER:-${USER:-ubuntu}}"
 TARGET_HOME="/home/${TARGET_USER}"
 
+# --- FIX: Wait for EC2 Cloud-Init & Apt Locks ---
+log "Waiting for cloud-init to complete..."
+if command -v cloud-init >/dev/null; then
+  cloud-init status --wait >/dev/null 2>&1 || true
+fi
+
+log "Waiting for apt locks to be released..."
+while sudo fuser /var/lib/dpkg/lock >/dev/null 2>&1 \
+   || sudo fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 \
+   || sudo fuser /var/lib/apt/lists/lock >/dev/null 2>&1; do
+  echo "Waiting for other software managers to finish..."
+  sleep 5
+done
+# ------------------------------------------------
+
 log "Updating apt cache..."
 sudo apt-get update -y
 
 log "Installing base packages..."
 sudo apt-get install -y \
   ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common \
-  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk
+  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk jq
 
 if ! need_cmd aws; then
   log "Installing AWS CLI v2 (official installer)..."
@@ -84,7 +103,6 @@ sudo systemctl daemon-reload || true
 sudo systemctl enable jenkins >/dev/null 2>&1 || true
 sudo systemctl restart jenkins  >/dev/null 2>&1 || true
 
-# Wait briefly for Jenkins to start and then print admin password and URL
 log "Checking Jenkins status and admin password..."
 for i in $(seq 1 12); do
   if sudo systemctl is-active --quiet jenkins; then
@@ -97,9 +115,6 @@ for i in $(seq 1 12); do
     PUB_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)
     if [ -z "$PUB_IP" ]; then
       PUB_IP=$(curl -s https://checkip.amazonaws.com || true)
-    fi
-    if [ -z "$PUB_IP" ]; then
-      PUB_IP=$(dig +short myip.opendns.com @resolver1.opendns.com || true)
     fi
     if [ -z "$PUB_IP" ]; then
       PUB_IP=$(hostname -I | awk '{print $1}')
@@ -125,12 +140,18 @@ log "Ensuring Docker is running..."
 sudo systemctl enable docker >/dev/null 2>&1 || true
 sudo systemctl start docker  >/dev/null 2>&1 || true
 
-if groups "$USER" | grep -q '\bdocker\b'; then
+# IMPORTANT:
+# You run minikube as ubuntu. So ensure *ubuntu* is in docker group and can access /var/run/docker.sock
+if id -nG "${TARGET_USER}" | grep -q '\bdocker\b'; then
   :
 else
-  sudo usermod -aG docker "$USER"
-  warn "User added to docker group; re-login may be required."
+  sudo usermod -aG docker "${TARGET_USER}"
+  warn "Added ${TARGET_USER} to docker group."
 fi
+
+# Make docker.sock usable immediately (no re-login needed)
+sudo chown root:docker /var/run/docker.sock || true
+sudo chmod 660 /var/run/docker.sock || true
 
 # Ensure kubectl/minikube directories exist and are owned by the SSH user
 sudo mkdir -p "${TARGET_HOME}/.kube" "${TARGET_HOME}/.minikube"
@@ -144,111 +165,135 @@ load_env_if_present() {
   fi
 }
 
-# --- UPDATED GIT CLONE SECTION (no hardcoded creds) ---
+# Optional: if Terraform uploads /home/${ssh_user}/.env, this loads it.
+load_env_if_present "${TARGET_HOME}/.env"
+
+# -------------------------------------------------------------------
+# REQUIRED INPUTS (must come from Terraform remote-exec exports OR .env)
+# -------------------------------------------------------------------
+: "${DEVOPS_REPO_URL:?DEVOPS_REPO_URL must be provided (from Terraform/driver)}"
+: "${BACKEND_REPO_URL:?BACKEND_REPO_URL must be provided (from Terraform/driver)}"
+: "${FRONTEND_REPO_URL:?FRONTEND_REPO_URL must be provided (from Terraform/driver)}"
+
+# Git auth (optional for public repos)
+PAT_VALUE="${GIT_PAT:-}"
+USER_VALUE="${GIT_USERNAME:-${GITHUB_USER:-git}}"
+
+# -------------------------------------------------------------------
+# URL helpers
+# -------------------------------------------------------------------
+strip_scheme() {
+  echo "$1" | sed -E 's|^https?://||'
+}
+
+to_https_url() {
+  local raw="$1"
+  raw="$(strip_scheme "$raw")"
+  echo "https://${raw}"
+}
+
+make_auth_url() {
+  local raw="$1" user="$2" pat="$3"
+  local base
+  base="$(strip_scheme "$raw")"
+  echo "https://${user}:${pat}@${base}"
+}
+
+# -------------------------------------------------------------------
+# Clone DevOps repo -> /home/<user>/new-devops-local
+# -------------------------------------------------------------------
 REPO_DIR="${TARGET_HOME}/new-devops-local"
 
-# Optional env files for credentials (set GIT_PAT and GIT_USERNAME, and repo URLs)
-load_env_if_present "${TARGET_HOME}/.env"
-load_env_if_present "${REPO_DIR}/.env"
-
-DEVOPS_REPO_URL="${DEVOPS_REPO_URL:-https://github.com/AlexBoyev/CloudRift-devops.git}"
-BACKEND_REPO_URL="${BACKEND_REPO_URL:-https://github.com/AlexBoyev/CloudRift-backend.git}"
-FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/AlexBoyev/CloudRift-frontend.git}"
-REPO_URL_BASE="$(echo "$DEVOPS_REPO_URL" | sed -E 's|^https?://||')"
-
-PAT_VALUE="${GIT_PAT:-}"
-USER_VALUE="${GIT_USERNAME:-git}"
-
-if [ -z "$PAT_VALUE" ]; then
-  warn "GIT_PAT not set; cloning without authentication (will fail on private repos)."
-  REPO_URL="https://${REPO_URL_BASE}"
+DEVOPS_AUTH_URL=""
+if [ -n "$PAT_VALUE" ]; then
+  DEVOPS_AUTH_URL="$(make_auth_url "$DEVOPS_REPO_URL" "$USER_VALUE" "$PAT_VALUE")"
 else
-  REPO_URL="https://${USER_VALUE}:${PAT_VALUE}@${REPO_URL_BASE}"
+  warn "GIT_PAT not set; cloning without authentication (will fail on private repos)."
+  DEVOPS_AUTH_URL="$(to_https_url "$DEVOPS_REPO_URL")"
 fi
 
+DEVOPS_CLEAN_URL="$(to_https_url "$DEVOPS_REPO_URL")"
+
 if [ ! -d "$REPO_DIR/.git" ]; then
-  log "Cloning infrastructure repo to $REPO_DIR"
-  rm -rf "$REPO_DIR"
-  for i in {1..3}; do
-    if sudo -u "${TARGET_USER}" git clone "$REPO_URL" "$REPO_DIR"; then
-      log "Clone successful on attempt $i"
-      sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "https://${REPO_URL_BASE}"
+  log "Cloning DevOps repo to $REPO_DIR"
+  sudo rm -rf "$REPO_DIR"
+  for i in 1 2 3; do
+    if sudo -u "${TARGET_USER}" GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone "$DEVOPS_AUTH_URL" "$REPO_DIR"; then
+      log "DevOps clone successful on attempt $i"
+      sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "$DEVOPS_CLEAN_URL" || true
       break
     else
-      warn "Clone attempt $i failed; retrying in 10s..."
-      rm -rf "$REPO_DIR"
+      warn "DevOps clone attempt $i failed; retrying in 10s..."
+      sudo rm -rf "$REPO_DIR"
       sleep 10
     fi
   done
-  
+
   if [ ! -d "$REPO_DIR/.git" ]; then
-    err "All clone attempts failed. Ensure GIT_PAT/GIT_USERNAME are set (via env or ${TARGET_HOME}/.env)."
+    err "All DevOps clone attempts failed. Ensure GIT_PAT/GIT_USERNAME are correct."
     exit 1
   fi
 else
-  log "Repo already present at $REPO_DIR"
-  sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "$REPO_URL"
-  if ! sudo -u "${TARGET_USER}" git -C "$REPO_DIR" pull --ff-only; then
-    warn "Git pull failed; please check repo access"
-  fi
-  sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "https://${REPO_URL_BASE}"
+  log "DevOps repo already present at $REPO_DIR; pulling latest"
+  sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "$DEVOPS_AUTH_URL" || true
+  sudo -u "${TARGET_USER}" GIT_TERMINAL_PROMPT=0 git -C "$REPO_DIR" pull --ff-only || warn "DevOps pull failed"
+  sudo -u "${TARGET_USER}" git -C "$REPO_DIR" remote set-url origin "$DEVOPS_CLEAN_URL" || true
 fi
+
 sudo chown -R "${TARGET_USER}:${TARGET_USER}" "$REPO_DIR"
-# --- END UPDATED GIT CLONE SECTION ---
 
-# Pre-clone backend and frontend using dynamic creds/URLs
-BACKEND_URL_RAW="${BACKEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-backend.git}"
-FRONTEND_URL_RAW="${FRONTEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-frontend.git}"
-BACKEND_URL_BASE="$(echo "$BACKEND_URL_RAW" | sed -E 's|^https?://||')"
-FRONTEND_URL_BASE="$(echo "$FRONTEND_URL_RAW" | sed -E 's|^https?://||')"
+# -------------------------------------------------------------------
+# Clone Backend + Frontend repos
+# -------------------------------------------------------------------
+BACKEND_AUTH_URL=""
+FRONTEND_AUTH_URL=""
+
 if [ -n "$PAT_VALUE" ]; then
-  BACKEND_URL="https://${USER_VALUE}:${PAT_VALUE}@${BACKEND_URL_BASE}"
-  FRONTEND_URL="https://${USER_VALUE}:${PAT_VALUE}@${FRONTEND_URL_BASE}"
+  BACKEND_AUTH_URL="$(make_auth_url "$BACKEND_REPO_URL" "$USER_VALUE" "$PAT_VALUE")"
+  FRONTEND_AUTH_URL="$(make_auth_url "$FRONTEND_REPO_URL" "$USER_VALUE" "$PAT_VALUE")"
 else
-  BACKEND_URL="https://${BACKEND_URL_BASE}"
-  FRONTEND_URL="https://${FRONTEND_URL_BASE}"
+  BACKEND_AUTH_URL="$(to_https_url "$BACKEND_REPO_URL")"
+  FRONTEND_AUTH_URL="$(to_https_url "$FRONTEND_REPO_URL")"
 fi
 
-for pair in "backend $BACKEND_URL /home/${TARGET_USER}/new-backend" "frontend $FRONTEND_URL /home/${TARGET_USER}/new-frontend"; do
+BACKEND_CLEAN_URL="$(to_https_url "$BACKEND_REPO_URL")"
+FRONTEND_CLEAN_URL="$(to_https_url "$FRONTEND_REPO_URL")"
+
+for pair in \
+  "backend $BACKEND_AUTH_URL /home/${TARGET_USER}/new-backend $BACKEND_CLEAN_URL" \
+  "frontend $FRONTEND_AUTH_URL /home/${TARGET_USER}/new-frontend $FRONTEND_CLEAN_URL"
+do
   set -- $pair
-  name=$1 url=$2 dir=$3
+  name=$1
+  url=$2
+  dir=$3
+  clean_url=$4
+
   if [ ! -d "$dir/.git" ]; then
-    warn "Cloning $name repository..."
+    log "Cloning $name repo into $dir"
+    sudo rm -rf "$dir"
     if ! sudo -u "${TARGET_USER}" GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone "$url" "$dir"; then
-      err "Failed to clone $name repository. Ensure GIT_PAT/GIT_USERNAME are set."
+      err "Failed to clone $name repository. Check URL and ensure GIT_PAT/GIT_USERNAME are correct."
       exit 1
     fi
+    sudo -u "${TARGET_USER}" git -C "$dir" remote set-url origin "$clean_url" || true
   else
+    log "$name repo exists; pulling latest"
     sudo -u "${TARGET_USER}" git -C "$dir" remote set-url origin "$url" || true
     sudo -u "${TARGET_USER}" GIT_TERMINAL_PROMPT=0 git -C "$dir" pull --ff-only || warn "$name pull failed"
+    sudo -u "${TARGET_USER}" git -C "$dir" remote set-url origin "$clean_url" || true
   fi
+
+  sudo chown -R "${TARGET_USER}:${TARGET_USER}" "$dir"
 done
 
-log "Versions:"
-if need_cmd kubectl; then kubectl version --client || true; else warn "kubectl not found"; fi
-if need_cmd minikube; then minikube version || true; else warn "minikube not found"; fi
-if need_cmd terraform; then terraform version | head -n1 || true; else warn "terraform not found"; fi
-if need_cmd docker; then docker --version || true; else warn "docker not found"; fi
-if need_cmd git; then git --version || true; else warn "git not found"; fi
-if need_cmd python3; then python3 --version || true; else warn "python3 not found"; fi
-if need_cmd aws; then aws --version || true; else warn "aws not found"; fi
-
-if need_cmd jenkins; then
-  log "Jenkins detected; showing admin info..."
-  if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-    ADMIN_PASS=$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || true)
-    if [ -n "$ADMIN_PASS" ]; then
-      log "Jenkins admin password: $ADMIN_PASS"
-    else
-      warn "Jenkins admin password file empty or unreadable."
-    fi
-  else
-    warn "Jenkins admin password file not found yet."
-  fi
-  PUB_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || hostname -I | awk '{print $1}')
-  if [ -n "$PUB_IP" ]; then
-    log "Jenkins URL: http://${PUB_IP}:8080/"
-  fi
-fi
+log "Bootstrap tool versions:"
+need_cmd kubectl   && kubectl version --client || true
+need_cmd minikube  && minikube version || true
+need_cmd terraform && terraform version | head -n1 || true
+need_cmd docker    && docker --version || true
+need_cmd git       && git --version || true
+need_cmd python3   && python3 --version || true
+need_cmd aws       && aws --version || true
 
 log "Bootstrap complete."

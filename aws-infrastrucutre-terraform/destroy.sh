@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# AWS Infrastructure Destroy Script
-# This script automates the complete Terraform infrastructure cleanup
+# AWS Infrastructure Destroy Script (NO CONFIRMATION)
+# If you run this script, it will destroy the Terraform-managed infrastructure immediately.
 
 set -e  # Exit on any error
 
@@ -44,7 +44,7 @@ check_terraform() {
         print_error "Terraform is not installed."
         exit 1
     fi
-    
+
     TERRAFORM_VERSION=$(terraform version | head -n1)
     print_info "Terraform found: $TERRAFORM_VERSION"
 }
@@ -52,113 +52,79 @@ check_terraform() {
 # Navigate to dev environment
 navigate_to_env() {
     print_info "Navigating to dev environment..."
-    
+
     if [ ! -d "environments/dev" ]; then
         print_error "Dev environment directory not found!"
         exit 1
     fi
-    
+
     cd environments/dev
     print_success "Changed directory to: $(pwd)"
 }
 
 # Check if state file exists
 check_state() {
-    if [ ! -f "terraform.tfstate" ]; then
-        print_warning "No terraform.tfstate file found."
-        print_info "Infrastructure may not be deployed or already destroyed."
-        read -p "Do you want to continue? (y/n): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            exit 0
-        fi
+    if [ ! -f "terraform.tfstate" ] && [ ! -d ".terraform" ] && [ ! -f ".terraform.lock.hcl" ]; then
+        print_warning "No local Terraform state/cache found in environments/dev."
+        print_info "If you use a remote backend, this may be normal."
+        print_info "Continuing anyway..."
     else
-        print_info "State file found. Checking resources..."
-        RESOURCE_COUNT=$(terraform state list 2>/dev/null | wc -l)
+        print_info "Checking resources in state (if available)..."
+        RESOURCE_COUNT=$(terraform state list 2>/dev/null | wc -l || true)
         print_info "Found $RESOURCE_COUNT resources in state"
     fi
 }
 
-# Show what will be destroyed
+# Show what will be destroyed (optional but useful)
 show_plan() {
     print_header "Destroy Plan"
-    
+
     print_info "Running: terraform plan -destroy"
     terraform plan -destroy
-    
-    if [ $? -ne 0 ]; then
-        print_error "Failed to generate destroy plan"
-        exit 1
-    fi
 }
 
-# Destroy infrastructure
+# Destroy infrastructure (NO CONFIRMATION)
 destroy_infrastructure() {
     print_header "Destroying Infrastructure"
-    
-    print_warning "⚠️  WARNING: This will PERMANENTLY DELETE all AWS resources!"
-    print_warning "This includes:"
-    echo "   - VPC and all subnets"
-    echo "   - EC2 instance"
-    echo "   - Security groups"
-    echo "   - Route tables and associations"
-    echo "   - Internet gateway"
-    echo "   - SSH key pair"
-    echo ""
-    print_error "This action CANNOT be undone!"
-    echo ""
-    
-    read -p "Are you absolutely sure you want to destroy all resources? (yes/no): " -r
-    echo
-    
-    if [[ $REPLY == "yes" ]]; then
-        print_info "Running: terraform destroy -auto-approve"
-        terraform destroy -auto-approve
-        
-        if [ $? -eq 0 ]; then
-            print_success "All infrastructure destroyed successfully!"
-        else
-            print_error "Infrastructure destruction failed"
-            print_info "Some resources may still exist. Check AWS Console."
-            exit 1
-        fi
-    else
-        print_warning "Destroy cancelled by user"
-        print_info "No resources were destroyed"
-        exit 0
-    fi
+
+    print_warning "Destroy is starting now (no confirmation prompt)."
+    print_info "Running: terraform destroy -auto-approve"
+    terraform destroy -auto-approve
+
+    print_success "Destroy command completed."
 }
 
 # Clean up local files
 cleanup_local_files() {
     print_header "Cleaning Up Local Files"
-    
+
     print_info "Removing SSH keys..."
     if [ -d "../../modules/ec2/keys" ]; then
         rm -f ../../modules/ec2/keys/stack_key.pem
         rm -f ../../modules/ec2/keys/stack_key.pub
         print_success "SSH keys removed"
+    else
+        print_info "SSH keys directory not found; skipping."
     fi
-    
-    print_info "Removing Terraform files..."
-    rm -f terraform.tfstate
-    rm -f terraform.tfstate.backup
-    rm -f .terraform.lock.hcl
-    rm -rf .terraform
-    
+
+    print_info "Removing local Terraform files/cache..."
+    rm -f terraform.tfstate || true
+    rm -f terraform.tfstate.backup || true
+    rm -f .terraform.lock.hcl || true
+    rm -rf .terraform || true
+
     print_success "Local files cleaned up"
 }
 
 # Display summary
 show_summary() {
     print_header "Cleanup Summary"
-    
-    echo "✅ Infrastructure destroyed"
-    echo "✅ State files removed"
-    echo "✅ SSH keys deleted"
-    echo "✅ Terraform cache cleaned"
+
+    echo "✅ Destroy command executed"
+    echo "✅ Local state/cache removed (if existed)"
+    echo "✅ SSH keys deleted (if existed)"
     echo ""
-    print_success "All resources have been cleaned up!"
+    print_success "Cleanup completed!"
     echo ""
     print_info "To redeploy infrastructure, run: ../../setup.sh"
 }
@@ -166,13 +132,12 @@ show_summary() {
 # Main execution
 main() {
     clear
-    print_header "AWS Infrastructure Cleanup - Terraform Destroy"
-    
+    print_header "AWS Infrastructure Cleanup - Terraform Destroy (NO CONFIRMATION)"
+
     # Get the script directory
     SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
     cd "$SCRIPT_DIR"
-    
-    # Run all steps
+
     check_terraform
     navigate_to_env
     check_state
@@ -182,5 +147,4 @@ main() {
     show_summary
 }
 
-# Run main function
 main

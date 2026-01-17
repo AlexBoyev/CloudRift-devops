@@ -143,7 +143,7 @@ jobs:
             scm {
               git {
                 remote {
-                  url('https://github.com/simple-ec2-deployment/new-frontend.git')
+                  url('https://github.com/AlexBoyev/CloudRift-frontend.git')
                   credentials('github-credentials')
                 }
                 branches('*/main')
@@ -166,7 +166,7 @@ jobs:
             scm {
               git {
                 remote {
-                  url('https://github.com/simple-ec2-deployment/new-backend.git')
+                  url('https://github.com/AlexBoyev/CloudRift-backend.git')
                   credentials('github-credentials')
                 }
                 branches('*/main')
@@ -261,7 +261,7 @@ jobs:
                     steps {
                       git branch: 'main',
                           credentialsId: 'github-credentials',
-                          url: 'https://github.com/simple-ec2-deployment/new-frontend.git'
+                          url: 'https://github.com/AlexBoyev/CloudRift-frontend.git'
                     }
                   }
                   stage('Install Dependencies') {
@@ -318,7 +318,7 @@ jobs:
                     steps {
                       git branch: 'main',
                           credentialsId: 'github-credentials',
-                          url: 'https://github.com/simple-ec2-deployment/new-backend.git'
+                          url: 'https://github.com/AlexBoyev/CloudRift-backend.git'
                     }
                   }
                   stage('Build') {

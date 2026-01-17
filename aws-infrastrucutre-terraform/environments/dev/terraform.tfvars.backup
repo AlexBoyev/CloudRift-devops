@@ -1,6 +1,6 @@
 
-region     = "us-east-1"
-account_id = "127854692984"
+region     = "<region>"
+account_id = "<id>"
 
 
 environment = "dev"

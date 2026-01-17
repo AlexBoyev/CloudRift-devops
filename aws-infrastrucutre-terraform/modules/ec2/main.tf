@@ -1,20 +1,48 @@
 ########################################
-# Create a new key pair (TLS -> AWS KeyPair)
+# modules/ec2/main.tf
 ########################################
 
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 4.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = ">= 4.0"
+    }
+    local = {
+      source  = "hashicorp/local"
+      version = ">= 2.0"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = ">= 3.0"
+    }
+  }
+}
+
+########################################
+# Key pair
+########################################
 resource "tls_private_key" "stack_key" {
   algorithm = var.algorithm
   rsa_bits  = var.rsa
 }
 
+# FIX: Uses path provided by root variable
 resource "local_file" "private_key" {
-  content  = tls_private_key.stack_key.private_key_pem
-  filename = "${path.module}/keys/stack_key.pem"
+  content         = tls_private_key.stack_key.private_key_pem
+  filename        = var.private_filename
+  file_permission = "0400"
 }
 
+# FIX: Uses path provided by root variable
 resource "local_file" "public_key" {
-  content  = tls_private_key.stack_key.public_key_openssh
-  filename = "${path.module}/keys/stack_key.pub"
+  content         = tls_private_key.stack_key.public_key_openssh
+  filename        = var.public_filename
+  file_permission = "0644"
 }
 
 resource "aws_key_pair" "stack_key" {
@@ -24,17 +52,12 @@ resource "aws_key_pair" "stack_key" {
 
 ########################################
 # Launch Template
-# - Keep ENI + security group here
-# - Keep tag_specifications here (Owner must be in request)
-# - Do NOT rely on LT for instance_type for Spot request
 ########################################
-
 resource "aws_launch_template" "this" {
-  name_prefix = "${var.instance_name}-"
-
-  # Keep AMI + key here
-  image_id = var.ami
-  key_name = aws_key_pair.stack_key.key_name
+  name_prefix   = "${var.instance_name}-"
+  image_id      = var.ami
+  instance_type = var.instance_type
+  key_name      = aws_key_pair.stack_key.key_name
 
   network_interfaces {
     subnet_id                   = var.subnet_id
@@ -42,109 +65,123 @@ resource "aws_launch_template" "this" {
     associate_public_ip_address = true
   }
 
+  block_device_mappings {
+    device_name = var.root_device_name
+    ebs {
+      volume_size           = var.root_volume_size
+      volume_type           = var.root_volume_type
+      delete_on_termination = true
+    }
+  }
+
+  # FIX: Merges Project, Owner, Environment into tags
   tag_specifications {
     resource_type = "instance"
-    tags = {
-      Name    = var.instance_name
-      Owner   = var.owner
-      Env     = var.environment
-      Project = var.project
-    }
+    tags = merge(var.tags, {
+      Name        = var.instance_name
+      Project     = var.project
+      Owner       = var.owner
+      Environment = var.environment
+    })
   }
 
   tag_specifications {
     resource_type = "volume"
-    tags = {
-      Owner   = var.owner
-      Env     = var.environment
-      Project = var.project
-    }
+    tags = merge(var.tags, {
+      Name        = "${var.instance_name}-root"
+      Project     = var.project
+      Owner       = var.owner
+      Environment = var.environment
+    })
+  }
+
+  tag_specifications {
+    resource_type = "network-interface"
+    tags = merge(var.tags, {
+      Name        = "${var.instance_name}-eni"
+      Project     = var.project
+      Owner       = var.owner
+      Environment = var.environment
+    })
   }
 }
 
 ########################################
-# Spot Instance Request
-# - Provide instance_type explicitly to satisfy AWS requirement
+# On-Demand EC2 Instance
 ########################################
-
-resource "aws_spot_instance_request" "this" {
-  wait_for_fulfillment = true
-
-  ami           = var.ami
-  instance_type = var.instance_type
-  key_name      = aws_key_pair.stack_key.key_name
-  subnet_id     = var.subnet_id
-
-  vpc_security_group_ids = [var.security_group_id]
-
-  # Request-time tags (good practice), but IAM requires request tags for RunInstances.
-  # We also satisfy that via LT tag_specifications above.
-  tags = {
-    Name    = var.instance_name
-    Owner   = var.owner
-    Env     = var.environment
-    Project = var.project
-  }
-
-  # Optional: if you want to use LT for additional settings you can keep this,
-  # but AWS already has all required fields above.
+resource "aws_instance" "this" {
   launch_template {
     id      = aws_launch_template.this.id
     version = "$Latest"
   }
-}
 
-########################################
-# Lookup the created instance (so we can get IPs for provisioning)
-########################################
-
-data "aws_instance" "this" {
-  instance_id = aws_spot_instance_request.this.spot_instance_id
+  tags = merge(var.tags, {
+    Name        = var.instance_name
+    Project     = var.project
+    Owner       = var.owner
+    Environment = var.environment
+  })
 }
 
 ########################################
 # Bootstrap provisioning
 ########################################
-
+########################################
+# Bootstrap provisioning
+########################################
 resource "null_resource" "bootstrap" {
-  depends_on = [aws_spot_instance_request.this]
+  depends_on = [aws_instance.this]
 
+  connection {
+    type        = "ssh"
+    host        = aws_instance.this.public_ip
+    user        = var.ssh_user
+    private_key = tls_private_key.stack_key.private_key_pem
+  }
+
+  # Copy .env file
   provisioner "file" {
     source      = abspath("${path.root}/../.env")
     destination = "/home/${var.ssh_user}/.env"
-    connection {
-      host        = data.aws_instance.this.public_ip
-      user        = var.ssh_user
-      private_key = tls_private_key.stack_key.private_key_pem
-      type        = "ssh"
-    }
   }
 
+  # Copy bootstrap.sh
   provisioner "file" {
     source      = "${path.module}/bootstrap.sh"
     destination = "/home/${var.ssh_user}/bootstrap.sh"
-    connection {
-      host        = data.aws_instance.this.public_ip
-      user        = var.ssh_user
-      private_key = tls_private_key.stack_key.private_key_pem
-      type        = "ssh"
-    }
   }
 
   provisioner "remote-exec" {
     inline = [
-      "sleep 60",
+      # 1. Wait for instance to be ready
+      "sleep 30",
+
+      # 2. Make script executable
       "chmod +x /home/${var.ssh_user}/bootstrap.sh",
+
+      # 3. Export variables (using nonsensitive to allow log printing)
+      "export DEVOPS_REPO_URL='${var.devops_repo_url}'",
+      "export BACKEND_REPO_URL='${var.backend_repo_url}'",
+      "export API_REPO_URL='${var.backend_repo_url}'",
+      "export FRONTEND_REPO_URL='${var.frontend_repo_url}'",
+      "export GIT_USERNAME='${var.git_username}'",
+      "export GIT_PAT='${nonsensitive(var.git_pat)}'",
+
+      # 4. Debug: Print that we are starting
+      "echo '--- STARTING BOOTSTRAP ---'",
+
+      # 5. Run bootstrap.sh with sudo -E to keep env vars
       "sudo -E /home/${var.ssh_user}/bootstrap.sh",
-      "echo 'Bootstrap complete. Running devops-setup.sh...' && sleep 5",
-      "cd /home/${var.ssh_user}/new-devops-local",
+
+      # 6. Check if directory exists before cd
+      "if [ -d \"/home/${var.ssh_user}/new-devops-local\" ]; then cd /home/${var.ssh_user}/new-devops-local; else echo 'Directory not found' && exit 1; fi",
+
+      # 7. Make devops-setup.sh executable
       "chmod +x devops-infra/scripts/devops-setup.sh",
+
+      # 8. Run the setup script
+      "echo '--- RUNNING DEVOPS SETUP ---'",
+      "sudo -E devops-infra/scripts/devops-setup.sh dev true false false"
     ]
-    connection {
-      host        = data.aws_instance.this.public_ip
-      user        = var.ssh_user
-      private_key = tls_private_key.stack_key.private_key_pem
-      type        = "ssh"
-    }
   }
 }

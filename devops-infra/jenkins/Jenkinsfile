@@ -4,13 +4,13 @@
 
 pipeline {
     agent any
-    
+
     options {
         timestamps()
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timeout(time: 60, unit: 'MINUTES')
     }
-    
+
     parameters {
         string(
             name: 'BRANCH_NAME',
@@ -54,12 +54,12 @@ pipeline {
             description: 'Use separate child pipelines for services (backend, frontend, data-structures)'
         )
     }
-    
+
     environment {
         BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
         // GitHub credentials (PAT token stored in Jenkins)
         GITHUB_PAT = credentials('github-pat-token')
-        
+
         // EC2 SSH credentials
         EC2_SSH_KEY = credentials('ec2-ssh-key')
         EC2_USER = 'ubuntu'
@@ -71,12 +71,12 @@ pipeline {
         // Service repositories (exposed as plain env vars so shell can use them)
         API_REPO_URL = "${params.API_REPO_URL}"
         FRONTEND_REPO_URL = "${params.FRONTEND_REPO_URL}"
-        
+
         // Minikube settings
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
         TERRAFORM_WORKSPACE = "${params.TERRAFORM_WORKSPACE}"
     }
-    
+
     stages {
         stage('Checkout & Clone to EC2') {
             steps {
@@ -85,11 +85,11 @@ pipeline {
                     echo "Stage 1: Cloning repository to EC2"
                     echo "=========================================="
                 }
-                
+
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
-                        
+
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
                           "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
 set -euo pipefail
@@ -144,7 +144,7 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Ensure Minikube is Running on EC2') {
             steps {
                 script {
@@ -152,7 +152,7 @@ SCRIPT
                     echo "Stage 3: Ensuring Minikube is running on EC2"
                     echo "=========================================="
                 }
-                
+
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
@@ -209,7 +209,7 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Call Child Pipelines') {
             when {
                 expression { return (params.USE_CHILD_PIPELINES == null ? true : params.USE_CHILD_PIPELINES) }
@@ -232,7 +232,7 @@ SCRIPT
                             propagate: true
                     }
                 }
-                
+
                 stage('Deploy Frontend') {
                     steps {
                         script {
@@ -252,7 +252,7 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Deploy Infrastructure with Terraform') {
             steps {
                 script {
@@ -260,28 +260,28 @@ SCRIPT
                     echo "Stage 5: Deploying with Terraform on EC2"
                     echo "=========================================="
                 }
-                
+
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                             REPO_DIR='${REPO_DIR}'
                             TERRAFORM_WORKSPACE='${TERRAFORM_WORKSPACE}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
-                            
+
                             cd \\${REPO_DIR}/devops-infra/terraform/environments/\\${TERRAFORM_WORKSPACE}
-                            
+
                             # Ensure kubectl context is set to Minikube
                             kubectl config use-context \\${MINIKUBE_PROFILE} || {
                                 echo 'WARNING: Could not set kubectl context, continuing...'
                             }
-                            
+
                             echo 'Running terraform init...'
                             terraform init || {
                                 echo 'ERROR: Terraform init failed'
                                 exit 1
                             }
                             echo '✓ Terraform initialized'
-                            
+
                             echo ''
                             echo 'Running terraform apply...'
                             terraform apply -auto-approve || {
@@ -297,7 +297,7 @@ SCRIPT
                                 kubectl delete deployment prometheus --ignore-not-found
                                 kubectl delete rs -l app=prometheus --ignore-not-found
                                 kubectl delete pod -l app=prometheus --ignore-not-found
-                                
+
                                 echo 'Re-running terraform apply after cleanup...'
                                 terraform apply -auto-approve || {
                                     echo 'ERROR: Terraform re-apply failed after Prometheus cleanup'
@@ -348,7 +348,7 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Verify Deployment on EC2') {
             steps {
                 script {
@@ -356,7 +356,7 @@ SCRIPT
                     echo "Stage 6: Verifying deployment on EC2"
                     echo "=========================================="
                 }
-                
+
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
@@ -364,7 +364,7 @@ SCRIPT
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
                             API_DIR='${API_DIR}'
                             FRONTEND_DIR='${FRONTEND_DIR}'
-                            
+
                             # Verify Git branch
                             echo '=========================================='
                             echo 'Git Repository Status:'
@@ -385,71 +385,71 @@ SCRIPT
                               fi
                             done
                             echo ''
-                            
+
                             # Wait for pods to be ready
                             echo 'Waiting for pods to be ready...'
                             MAX_RETRIES=40
                             RETRY_COUNT=0
-                            
+
                             while [ \\$RETRY_COUNT -lt \\$MAX_RETRIES ]; do
                                 PODS=\\$(kubectl get pods --no-headers 2>/dev/null)
-                                
+
                                 if [ -z \\"\\$PODS\\" ]; then
                                     echo 'No pods found yet, waiting...'
                                     sleep 5
                                     RETRY_COUNT=\\$((RETRY_COUNT + 1))
                                     continue
                                 fi
-                                
+
                                 NOT_READY=\\$(echo \\"\\$PODS\\" | grep -v 'Running' | grep -v 'Completed' | wc -l | tr -d ' ')
-                                
+
                                 if [ \\"\\$NOT_READY\\" -eq 0 ] && [ -n \\"\\$PODS\\" ]; then
                                     echo '✓ All pods are Running!'
                                     break
                                 fi
-                                
+
                                 if [ \\$((RETRY_COUNT % 5)) -eq 0 ]; then
                                     echo \\"Still waiting for pods... (attempt \\$RETRY_COUNT/\\$MAX_RETRIES)\\"
                                     kubectl get pods || true
                                 fi
-                                
+
                                 sleep 3
                                 RETRY_COUNT=\\$((RETRY_COUNT + 1))
                             done
-                            
+
                             if [ \\$RETRY_COUNT -ge \\$MAX_RETRIES ]; then
                                 echo 'WARNING: Timeout waiting for pods. Current status:'
                                 kubectl get pods || true
                             fi
-                            
+
                             echo ''
                             echo '=========================================='
                             echo 'Kubernetes Resources Status:'
                             echo '=========================================='
-                            
+
                             echo ''
                             echo '=== Pods (default namespace) ==='
                             kubectl get pods -o wide || true
-                            
+
                             echo ''
                             echo '=== Pods (ingress-nginx namespace) ==='
                             kubectl get pods -n ingress-nginx -o wide || true
-                            
+
                             echo ''
                             echo '=== Services ==='
                             kubectl get services || true
-                            
+
                             echo ''
                             echo '=== Deployments ==='
                             kubectl get deployments || true
-                            
+
                             echo ''
                             echo '=== Ingress ==='
                             kubectl get ingress || true
-                            
+
                             # Get access URLs
                             MINIKUBE_IP=\\$(minikube ip -p \\${MINIKUBE_PROFILE} 2>/dev/null || echo 'unknown')
-                            
+
                             echo ''
                             echo '=========================================='
                             echo 'Access URLs:'
@@ -462,10 +462,10 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Optional Port-Forward') {
             when {
-                expression { 
+                expression {
                     return params.ENABLE_PORT_FORWARD.toBoolean()
                 }
             }
@@ -475,7 +475,7 @@ SCRIPT
                     echo "Stage 7: Setting up port-forward (Optional)"
                     echo "=========================================="
                 }
-                
+
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
 cat <<'REMOTE' | ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} bash
@@ -567,7 +567,7 @@ REMOTE
             }
         }
     }
-    
+
     post {
         success {
             echo "=========================================="

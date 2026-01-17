@@ -1,9 +1,10 @@
 
-region     = "us-east-1"
-account_id = "160885291049"
-
+region      = "us-east-1"
+account_id  = "160885291049"
 environment = "dev"
 project     = "stack"
+owner       = "terraform_ec2_deployment"
+ssh_user    = "ubuntu"
 
 //**********VPC-Module**********//
 
@@ -34,7 +35,7 @@ instance_name = "stack-Host"
 instance_type    = "t3.medium"
 algorithm        = "RSA"
 rsa              = 2048
-key_name         = "stack-key"
+key_name         = "stack-key-dev"
 private_filename = "./terraform-modules/modules/ec2/keys/stack_key.pem"
 public_filename  = "./terraform-modules/modules/ec2/keys/stack_key.pub"
 
@@ -128,3 +129,8 @@ security_groups = [
 
 
 
+devops_repo_url   = "https://github.com/AlexBoyev/CloudRift-devops.git"
+backend_repo_url  = "https://github.com/AlexBoyev/CloudRift-backend.git"
+frontend_repo_url = "https://github.com/AlexBoyev/CloudRift-frontend.git"
+git_username      = "AlexBoyev"
+git_pat           = "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"

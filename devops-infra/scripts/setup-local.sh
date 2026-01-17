@@ -21,8 +21,19 @@ WORKSPACE_ROOT="$(dirname "$PROJECT_ROOT")"    # parent folder containing repos
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
 BRANCH_NAME="${BRANCH_NAME:-main}"
 
-BACKEND_REPO_URL="${BACKEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-backend.git}"
-FRONTEND_REPO_URL="${FRONTEND_REPO_URL:-https://github.com/simple-ec2-deployment/new-frontend.git}"
+load_env_if_present() {
+  local env_path="$1"
+  if [ -f "$env_path" ]; then
+    # shellcheck source=/dev/null
+    . "$env_path"
+  fi
+}
+
+# Load your repo env (single source of truth)
+load_env_if_present "${PROJECT_ROOT}/driver/.env"
+
+: "${BACKEND_REPO_URL:?BACKEND_REPO_URL must be set in .env}"
+: "${FRONTEND_REPO_URL:?FRONTEND_REPO_URL must be set in .env}"
 BACKEND_DIR="${BACKEND_DIR:-${WORKSPACE_ROOT}/new-backend}"
 FRONTEND_DIR="${FRONTEND_DIR:-${WORKSPACE_ROOT}/new-frontend}"
 

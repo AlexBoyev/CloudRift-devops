@@ -99,3 +99,22 @@ variable "owner" {
   type    = string
   default = "terraform_ec2_deployment"
 }
+
+variable "devops_repo_url" {
+  type = string
+}
+
+variable "backend_repo_url" {
+  type = string
+}
+
+variable "frontend_repo_url" {
+  type = string
+}
+
+variable "ssh_user" {
+  type = string
+}
+
+variable "git_username" { type = string }
+variable "git_pat" { type = string }

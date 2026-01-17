@@ -1,13 +1,13 @@
 output "stack_instance_id" {
-  value = data.aws_instance.this.id
+  value = aws_instance.this.id
 }
 
 output "stack_public_ip" {
-  value = data.aws_instance.this.public_ip
+  value = aws_instance.this.public_ip
 }
 
 output "stack_private_ip" {
-  value = data.aws_instance.this.private_ip
+  value = aws_instance.this.private_ip
 }
 
 output "public_key_content" {

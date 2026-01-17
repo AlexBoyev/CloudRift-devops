@@ -331,13 +331,30 @@ def _print_detected_paths(p: RepoPaths) -> None:
 # tfvars writing
 # ---------------------------------------------------------------------
 def _credentials_tfvars_content() -> str:
+    # We write ALL dynamic/sensitive variables here.
+    # Since this is an .auto.tfvars file, it overrides everything else.
     lines = [
+        # AWS Credentials
         f'aws_access_key = "{aws_access_token}"',
         f'aws_secret_key = "{aws_secret_token}"',
         f'region = "{aws_region}"',
+
+        # --- FIX: Add Account ID and Owner here ---
+        f'account_id = "{account_id}"',
+        f'owner = "{owner}"',
+        # ------------------------------------------
+
+        # Git/Repo Variables
+        f'devops_repo_url = "{devops_repo_url}"',
+        f'backend_repo_url = "{backend_repo_url}"',
+        f'frontend_repo_url = "{frontend_repo_url}"',
+        f'git_username = "{git_username}"',
+        f'git_pat = "{git_pat}"',
     ]
+
     if aws_session_token:
         lines.append(f'aws_session_token = "{aws_session_token}"')
+
     return "\n".join(lines) + "\n"
 
 
@@ -368,15 +385,6 @@ def _upsert_tfvars_kv(tfvars_path: Path, key: str, value: str) -> None:
     tfvars_path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def _write_tfvars_overrides(p: RepoPaths) -> None:
-    """
-    Non-destructive updates:
-      - upserts only specific keys in environments/dev/terraform.tfvars
-      - keeps the rest of the file intact
-    """
-    _upsert_tfvars_kv(p.dev_terraform_tfvars, "account_id", account_id)
-    _upsert_tfvars_kv(p.dev_terraform_tfvars, "owner", owner)
-    print(f"Updated: {p.dev_terraform_tfvars} (account_id + owner only)")
 
 
 # ---------------------------------------------------------------------
@@ -478,7 +486,6 @@ def _provision(p: RepoPaths, bash_path: Path) -> None:
     print("\n[Provision] Writing tfvars and running setup.sh...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
-    _write_tfvars_overrides(p)
     _run_bash_script(bash_path, SETUP_SH, p.infra_dir, auto_confirm=False)
     print("[Provision] Completed successfully.")
 
@@ -487,7 +494,6 @@ def _destroy(p: RepoPaths, bash_path: Path) -> None:
     print("\n[Destroy] Writing tfvars and running destroy.sh (auto-confirm enabled)...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
-    _write_tfvars_overrides(p)
     _run_bash_script(bash_path, DESTROY_SH, p.infra_dir, auto_confirm=True)
     print("[Destroy] Completed successfully.")
 

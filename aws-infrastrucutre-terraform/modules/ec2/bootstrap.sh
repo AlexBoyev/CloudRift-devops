@@ -160,6 +160,10 @@ sudo chown -R "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.kube" "${TARGET_H
 load_env_if_present() {
   local env_path="$1"
   if [ -f "$env_path" ]; then
+    log "Sanitizing .env file (removing Windows \r characters)..."
+    # FIX: Remove carriage returns (Windows format) so Linux can read it
+    sed -i 's/\r$//' "$env_path" || true
+
     # shellcheck source=/dev/null
     . "$env_path"
   fi

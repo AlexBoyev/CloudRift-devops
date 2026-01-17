@@ -1,9 +1,6 @@
 
-region      = "us-east-1"
-account_id  = "160885291049"
 environment = "dev"
 project     = "stack"
-owner       = "terraform_ec2_deployment"
 ssh_user    = "ubuntu"
 
 //**********VPC-Module**********//
@@ -126,11 +123,3 @@ security_groups = [
   }
 
 ]
-
-
-
-devops_repo_url   = "https://github.com/AlexBoyev/CloudRift-devops.git"
-backend_repo_url  = "https://github.com/AlexBoyev/CloudRift-backend.git"
-frontend_repo_url = "https://github.com/AlexBoyev/CloudRift-frontend.git"
-git_username      = ""
-git_pat           = ""

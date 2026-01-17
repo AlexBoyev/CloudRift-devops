@@ -182,4 +182,4 @@ provisioner "remote-exec" {
       "echo '--- RUNNING DEVOPS SETUP ---'",
       "sudo -E devops-infra/scripts/devops-setup.sh dev true false false"
     ]
-  }
+}

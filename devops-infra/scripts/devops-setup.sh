@@ -276,8 +276,17 @@ ensure_repo() {
     print_status "$repo_name repository updated from remote"
   fi
 
-  # Always reset remote to clean URL (avoid leaving PAT in git config)
+# Always reset remote to clean URL (avoid leaving PAT in git config)
   git -C "$target_dir" remote set-url origin "$clean_url" >/dev/null 2>&1 || true
+
+  # --- FIX: FORCE PERMISSIONS FOR JENKINS ---
+  # Ensure the entire repo is owned by the EC2 user (ubuntu)
+  # This prevents "Permission Denied" errors when Jenkins tries to fetch later.
+  if [ "$EC2_ENV" = true ]; then
+     # using -R to fix the whole tree, not just .git
+     sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir" 2>/dev/null || true
+     sudo chmod -R u+rwX "$target_dir" 2>/dev/null || true
+  fi
   return 0
 }
 

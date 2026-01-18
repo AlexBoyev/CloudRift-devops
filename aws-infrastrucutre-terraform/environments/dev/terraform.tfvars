@@ -29,7 +29,7 @@ availability_zones = [
 ami           = "ami-0ecb62995f68bb549"
 instance_name = "stack-Host"
 
-instance_type    = "t3.medium"
+instance_type    = "t3.large"
 algorithm        = "RSA"
 rsa              = 2048
 key_name         = "stack-key-dev"

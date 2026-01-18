@@ -14,8 +14,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# FIX: Ensure log function is defined
-log()           { echo -e "${BLUE}[INFO]${NC} $1"; }
+# --- FIX 1: ADDED LOG FUNCTION ---
+log() { echo -e "${BLUE}[INFO]${NC} $1"; }
+# ---------------------------------
+
 print_status()  { echo -e "${GREEN}✓${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_error()   { echo -e "${RED}✗${NC} $1"; }
@@ -41,12 +43,16 @@ SKIP_BUILD="${4:-false}"
 # -----------------------------
 # IMPORTANT: NO .env LOADING ON EC2
 # -----------------------------
+# This script does NOT source any .env files.
+# Repo URLs and optional Git creds must be provided via environment variables
+# (e.g., injected by Terraform remote-exec or by your SSH session).
+#
 # Required repo URLs:
 : "${DEVOPS_REPO_URL:?DEVOPS_REPO_URL must be provided via environment}"
 : "${API_REPO_URL:?API_REPO_URL must be provided via environment}"
 : "${FRONTEND_REPO_URL:?FRONTEND_REPO_URL must be provided via environment}"
 
-# Optional Git credentials
+# Optional Git credentials (for private repos)
 GITHUB_USER="${GITHUB_USER:-${GIT_USERNAME:-}}"
 GITHUB_PAT="${GITHUB_PAT:-${GIT_PAT:-}}"
 
@@ -223,12 +229,15 @@ normalize_url() {
 }
 
 _repo_auth_url() {
+  # If PAT is provided, return URL with auth; else return normalized clean URL.
   local repo_url="$1"
   local normalized
   normalized="$(normalize_url "$repo_url")"
 
   if [ -n "${GITHUB_PAT:-}" ]; then
     if [ -z "${GITHUB_USER:-}" ]; then
+      # GitHub accepts PAT as username in practice, but we avoid guessing.
+      # Use "git" if user wasn't provided.
       GITHUB_USER="git"
     fi
     echo "https://${GITHUB_USER}:${GITHUB_PAT}@${normalized#https://}"
@@ -250,19 +259,27 @@ ensure_repo() {
     echo "Cloning $repo_name repository..."
     mkdir -p "$(dirname "$target_dir")"
     if ! git -c credential.helper= clone "$auth_url" "$target_dir"; then
-      print_error "Could not clone $repo_name. Check GIT_PAT/GIT_USERNAME."
+      print_error "Could not clone $repo_name."
+      if [ -z "${GITHUB_PAT:-}" ]; then
+        print_error "Repo may be private. Provide GIT_PAT/GIT_USERNAME via environment."
+      else
+        print_error "PAT provided but clone still failed. Check access/permissions."
+      fi
       return 1
     fi
     print_status "$repo_name repository cloned"
   else
     print_status "$repo_name repository already exists"
+    # Use auth URL for fetch/pull if PAT exists
     git -C "$target_dir" remote set-url origin "$auth_url" >/dev/null 2>&1 || true
     git -C "$target_dir" fetch --all --tags >/dev/null 2>&1 || true
+    # Reset to origin/main to avoid drift (matches your original behavior)
     git -C "$target_dir" fetch origin main >/dev/null 2>&1 || true
     git -C "$target_dir" reset --hard origin/main >/dev/null 2>&1 || true
     print_status "$repo_name repository updated from remote"
   fi
 
+  # Always reset remote to clean URL (avoid leaving PAT in git config)
   git -C "$target_dir" remote set-url origin "$clean_url" >/dev/null 2>&1 || true
   return 0
 }
@@ -302,13 +319,33 @@ if [ "$SKIP_BUILD" = "false" ]; then
     FRONTEND_REPO_PATH="$PROJECT_ROOT/../new-frontend"
   fi
 
+  if [ ! -d "$BACKEND_REPO_PATH" ]; then
+    print_error "Backend repository not found at: $BACKEND_REPO_PATH"
+    exit 1
+  fi
+  if [ ! -d "$FRONTEND_REPO_PATH" ]; then
+    print_error "Frontend repository not found at: $FRONTEND_REPO_PATH"
+    exit 1
+  fi
+  print_status "Source repositories verified"
+
   print_status "Configuring Minikube Docker environment..."
   if [ "$EC2_ENV" = true ]; then
     eval "$(sudo -u "$EC2_USER" minikube docker-env)"
+    export DOCKER_TLS_VERIFY="${DOCKER_TLS_VERIFY:-}"
+    export DOCKER_HOST="${DOCKER_HOST:-}"
+    export DOCKER_CERT_PATH="${DOCKER_CERT_PATH:-}"
+    export DOCKER_API_VERSION="${DOCKER_API_VERSION:-}"
     DOCKER_CMD="sudo -E docker"
   else
     eval "$(minikube docker-env)"
     DOCKER_CMD="docker"
+  fi
+
+  if echo "${DOCKER_HOST:-}" | grep -q "minikube"; then
+    print_status "Docker configured for Minikube"
+  else
+    print_warning "Docker may not be pointing to Minikube"
   fi
 
   if kubectl get pods 2>/dev/null | grep -q "ImagePullBackOff\|ErrImagePull\|ErrImageNeverPull"; then
@@ -326,7 +363,12 @@ if [ "$SKIP_BUILD" = "false" ]; then
     local image_name="$3"
     local display_name="$4"
 
+    echo ""
     echo "Building $display_name..."
+    echo "  Dockerfile: $dockerfile"
+    echo "  Context:    $context"
+    echo "  Image:      $image_name"
+
     if [ ! -f "$context/$dockerfile" ]; then
       print_error "Dockerfile not found: $context/$dockerfile"
       IMAGES_FAILED=$((IMAGES_FAILED + 1))
@@ -339,7 +381,7 @@ if [ "$SKIP_BUILD" = "false" ]; then
         IMAGES_BUILT=$((IMAGES_BUILT + 1))
         return 0
       fi
-      print_error "$display_name built but image not found"
+      print_error "$display_name build reported success but image not found"
       IMAGES_FAILED=$((IMAGES_FAILED + 1))
       return 1
     fi
@@ -369,10 +411,15 @@ if [ "$SKIP_BUILD" = "false" ]; then
     fi
   done
 
+  echo ""
+  echo "Build Summary: $IMAGES_BUILT built, $IMAGES_FAILED failed, $MISSING missing"
+
   if [ "$IMAGES_FAILED" -gt 0 ] || [ "$MISSING" -gt 0 ]; then
-    print_error "Image build completed with errors."
+    print_error "Image build completed with errors. Cannot proceed with deployment."
     exit 1
   fi
+
+  print_status "All images built and verified successfully"
 else
   print_status "Skipping Docker build as requested"
 fi
@@ -383,36 +430,48 @@ fi
 print_header "Step 5: Deploying Kubernetes Resources"
 
 DEVOPS_INFRA="$REPO_ROOT/devops-infra"
+echo "Deploying Kubernetes resources from: $DEVOPS_INFRA"
 
 echo "Applying namespaces..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/" 2>/dev/null || true
+print_status "Namespaces applied"
 
 echo "Deploying database..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/"
+print_status "Database deployed"
 
 echo "Deploying frontend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
+print_status "Frontend deployed"
 
 echo "Deploying backend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/"
+print_status "Backend deployed"
 
 echo "Deploying data structure services..."
 if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/data-structures/"
+  print_status "Data structure services deployed"
+else
+  print_warning "Data structures manifests not found"
 fi
 
 echo "Deploying ingress..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
+print_status "Ingress deployed"
 
 if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
   echo "Deploying NGINX ingress controller..."
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress-controller/"
+  print_status "NGINX ingress controller deployed"
 fi
 
 if [ "$DEPLOY_MONITORING" = "true" ]; then
   print_header "Step 6: Deploying Monitoring Stack"
+
   echo "Deploying Prometheus..."
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/prometheus/"
+  print_status "Prometheus deployed"
 
   if [ -d "$DEVOPS_INFRA/kubernetes/monitoring/grafana/dashboards" ]; then
     kubectl create configmap grafana-dashboards \
@@ -422,6 +481,7 @@ if [ "$DEPLOY_MONITORING" = "true" ]; then
 
   echo "Deploying Grafana..."
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/grafana/"
+  print_status "Grafana deployed"
 fi
 
 # -----------------------------
@@ -432,9 +492,11 @@ print_header "Step 7: Waiting for Deployments"
 kubectl rollout status deployment/frontend-deployment --timeout=300s 2>/dev/null || print_warning "Frontend rollout timeout"
 kubectl rollout status deployment/backend-deployment  --timeout=300s 2>/dev/null || print_warning "Backend rollout timeout"
 kubectl rollout status deployment/stack-deployment    --timeout=300s 2>/dev/null || print_warning "Stack rollout timeout"
+kubectl rollout status deployment/linkedlist-deployment --timeout=300s 2>/dev/null || print_warning "LinkedList rollout timeout"
+kubectl rollout status deployment/graph-deployment    --timeout=300s 2>/dev/null || print_warning "Graph rollout timeout"
 
 # -----------------------------
-# External access / Auto-Start
+# External access (WITH NEW AUTO-START FIX)
 # -----------------------------
 print_header "Step 8: Configuring Auto-Start Service"
 
@@ -442,6 +504,10 @@ pkill -f 'kubectl port-forward' >/dev/null 2>&1 || true
 sleep 2
 
 KUBECTL_PATH="$(command -v kubectl || true)"
+if [ -z "$KUBECTL_PATH" ]; then
+  print_error "kubectl not found in PATH"
+  exit 1
+fi
 
 if [ "$EC2_ENV" = true ]; then
   echo "Setting up Systemd Service on EC2 for Auto-Start..."
@@ -504,6 +570,7 @@ EOF
   fi
 
 else
+  # Local flow (unchanged)
   echo "Starting port-forward for local access..."
   kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 32080:80 --address=0.0.0.0 &
   PORT_FORWARD_PID=$!
@@ -516,11 +583,20 @@ fi
 # -----------------------------
 print_header "Deployment Status"
 
+echo "=== Pods ==="
+kubectl get pods -o wide || true
+
+echo ""
 echo "=== Services ==="
 kubectl get services || true
+
 echo ""
 echo "=== Ingress ==="
 kubectl get ingress || true
+
+echo ""
+echo "=== Nodes ==="
+kubectl get nodes || true
 
 print_header "Access Information"
 
@@ -530,13 +606,43 @@ if [ "$EC2_ENV" = true ]; then
   echo -e "${GREEN}Application is accessible at:${NC}"
   echo -e "  - Frontend: ${YELLOW}http://${EC2_PUBLIC_IP}/${NC}"
   echo -e "  - API:      ${YELLOW}http://${EC2_PUBLIC_IP}/api/${NC}"
+
+  if [ "$DEPLOY_MONITORING" = "true" ]; then
+    echo ""
+    echo -e "${BLUE}Monitoring (port-forward required):${NC}"
+    echo "  - Prometheus: kubectl port-forward svc/prometheus-service 9090:9090"
+    echo "  - Grafana:    kubectl port-forward svc/grafana-service 3000:3000"
+  fi
+
   echo ""
-  echo "NOTE: If you reboot this VM, the 'cloudrift' service will auto-start everything."
+  echo -e "${BLUE}Service Management:${NC}"
+  echo "  - Service Status: sudo systemctl status cloudrift"
+  echo "  - Restart App:    sudo systemctl restart cloudrift"
 else
   MINIKUBE_IP="$(minikube ip 2>/dev/null || echo "localhost")"
+
   echo -e "${GREEN}Application is accessible at:${NC}"
   echo -e "  - Frontend: ${YELLOW}http://${MINIKUBE_IP}:32080/${NC}"
+  echo -e "  - API:      ${YELLOW}http://${MINIKUBE_IP}:32080/api/${NC}"
+
+  if [ "$DEPLOY_MONITORING" = "true" ]; then
+    echo ""
+    echo -e "${BLUE}Monitoring:${NC}"
+    echo "  - Prometheus: kubectl port-forward svc/prometheus-service 9090:9090"
+    echo "  - Grafana:    kubectl port-forward svc/grafana-service 3000:3000"
+  fi
 fi
+
+print_header "Setup Complete!"
+
+echo "✅ Prerequisites checked"
+echo "✅ Kubernetes environment configured"
+echo "✅ Source code repositories prepared"
+echo "✅ Docker images built" $([ "$SKIP_BUILD" = "true" ] && echo "(skipped)" || echo "")
+echo "✅ Kubernetes resources deployed"
+echo "✅ External access configured (Auto-Start Enabled)"
+echo "✅ Monitoring stack deployed" $([ "$DEPLOY_MONITORING" = "true" ] && echo "" || echo "(skipped)")
+echo ""
 
 print_status "Your AKS Data Structures Platform is ready."
 exit 0

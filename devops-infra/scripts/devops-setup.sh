@@ -14,10 +14,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# --- FIX 1: ADDED LOG FUNCTION ---
+# FIX: Log function defined
 log() { echo -e "${BLUE}[INFO]${NC} $1"; }
-# ---------------------------------
-
 print_status()  { echo -e "${GREEN}✓${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
 print_error()   { echo -e "${RED}✗${NC} $1"; }
@@ -43,16 +41,11 @@ SKIP_BUILD="${4:-false}"
 # -----------------------------
 # IMPORTANT: NO .env LOADING ON EC2
 # -----------------------------
-# This script does NOT source any .env files.
-# Repo URLs and optional Git creds must be provided via environment variables
-# (e.g., injected by Terraform remote-exec or by your SSH session).
-#
-# Required repo URLs:
 : "${DEVOPS_REPO_URL:?DEVOPS_REPO_URL must be provided via environment}"
 : "${API_REPO_URL:?API_REPO_URL must be provided via environment}"
 : "${FRONTEND_REPO_URL:?FRONTEND_REPO_URL must be provided via environment}"
 
-# Optional Git credentials (for private repos)
+# Optional Git credentials
 GITHUB_USER="${GITHUB_USER:-${GIT_USERNAME:-}}"
 GITHUB_PAT="${GITHUB_PAT:-${GIT_PAT:-}}"
 
@@ -496,7 +489,7 @@ kubectl rollout status deployment/linkedlist-deployment --timeout=300s 2>/dev/nu
 kubectl rollout status deployment/graph-deployment    --timeout=300s 2>/dev/null || print_warning "Graph rollout timeout"
 
 # -----------------------------
-# External access (WITH NEW AUTO-START FIX)
+# External access (WITH PERMISSION FIX)
 # -----------------------------
 print_header "Step 8: Configuring Auto-Start Service"
 
@@ -512,7 +505,10 @@ fi
 if [ "$EC2_ENV" = true ]; then
   echo "Setting up Systemd Service on EC2 for Auto-Start..."
 
-  # 1. Create the startup script (Starts Minikube AND Port Forward)
+  # FIX: We now handle the port-forward permission correctly
+  # 1. Minikube starts as 'ubuntu' (required)
+  # 2. Port-forward runs as 'root' (required for port 80), using ubuntu's config
+
   cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
 #!/bin/bash
 set -e
@@ -521,16 +517,18 @@ set -e
 exec 1> >(logger -s -t $(basename $0)) 2>&1
 
 echo "Ensuring Minikube is running..."
-# Start Minikube (safe to run even if already running)
-# We use runuser to ensure it runs as the correct user (ubuntu), not root
+# Start Minikube as ubuntu user
 runuser -l ubuntu -c 'minikube start --driver=docker'
 
 echo "Waiting for Ingress Controller..."
 runuser -l ubuntu -c 'kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s' || true
 
 echo "Starting Port Forward..."
-# We bind to 0.0.0.0 so it is accessible externally
-runuser -l ubuntu -c 'kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0'
+# IMPORTANT: This runs as ROOT because the service calls it as root.
+# We explicitly point to ubuntu's kubeconfig so kubectl works.
+# This allows binding to privileged port 80.
+export KUBECONFIG=/home/ubuntu/.kube/config
+/usr/local/bin/kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
 EOF
 
   sudo chmod +x /usr/local/bin/start-cloudrift.sh

@@ -127,10 +127,10 @@ resource "aws_instance" "this" {
 ########################################
 resource "null_resource" "bootstrap" {
   depends_on = [aws_instance.this]
-
   connection {
     type        = "ssh"
-    host        = aws_instance.this.public_ip
+    # FIX 2: Connect using the Elastic IP, not the instance's old dynamic IP
+    host        = aws_eip.this.public_ip
     user        = var.ssh_user
     private_key = tls_private_key.stack_key.private_key_pem
   }

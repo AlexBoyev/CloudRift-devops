@@ -263,6 +263,10 @@ ensure_repo() {
     print_status "$repo_name repository cloned"
   else
     print_status "$repo_name repository already exists"
+    if [ "$EC2_ENV" = true ]; then
+    sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir/.git" 2>/dev/null || true
+    sudo chmod -R u+rwX "$target_dir/.git" 2>/dev/null || true
+    fi
     # Use auth URL for fetch/pull if PAT exists
     git -C "$target_dir" remote set-url origin "$auth_url" >/dev/null 2>&1 || true
     git -C "$target_dir" fetch --all --tags >/dev/null 2>&1 || true

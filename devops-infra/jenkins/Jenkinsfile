@@ -91,9 +91,11 @@ pipeline {
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "echo 'Connected to EC2 instance'"
 
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' REPO_DIR='${REPO_DIR}' REPO_URL='${REPO_URL}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
+                          "BRANCH=${BRANCH_NAME} REPO_DIR=${REPO_DIR} REPO_URL=${REPO_URL} GITHUB_USER=${GITHUB_PAT_USR} GITHUB_PASS=${GITHUB_PAT_PSW} bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
+
+export GIT_TERMINAL_PROMPT=0
 
 normalize_url() {
   local input="$1"
@@ -110,30 +112,52 @@ normalize_url() {
 FULL_URL="$(normalize_url "$REPO_URL")"
 echo "Repo (normalized): $FULL_URL"
 echo "Branch: $BRANCH"
-if [ -n "${GITHUB_PASS:-}" ]; then
-  TOKEN="$GITHUB_PASS"
-else
-  TOKEN="$GITHUB_PAT"
-fi
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
-AUTH_HEADER="Authorization: Basic $AUTH_B64"
+TOKEN="${GITHUB_PASS:-}"
 
+if [ -z "$TOKEN" ]; then
+  echo "ERROR: GITHUB_PASS is empty on EC2 (Jenkins did not pass the credential)."
+  exit 1
+fi
+
+# 1. CONSTRUCT URL WITH CREDENTIALS (The Manual Fix Method)
+# Strip "https://" to avoid duplication when embedding credentials
+CLEAN_URL_NO_PROTO=$(echo "$FULL_URL" | sed -E 's|^https?://||')
+AUTH_URL="https://${GITHUB_USER:-AlexBoyev}:$TOKEN@$CLEAN_URL_NO_PROTO"
+
+# 2. CONFIGURE GIT REPO
 if [ ! -d "$REPO_DIR/.git" ]; then
   mkdir -p "$REPO_DIR"
   echo "Cloning repository from branch: $BRANCH..."
-  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$REPO_DIR"
+  # Clone using the Authenticated URL directly
+  git clone -b "$BRANCH" "$AUTH_URL" "$REPO_DIR"
+
+  # Restore clean origin URL immediately to avoid persisting token
+  git -C "$REPO_DIR" remote set-url origin "$FULL_URL" || true
 else
   echo "Repository exists, cleaning and resetting branch: $BRANCH..."
   cd "$REPO_DIR"
   git config --global --add safe.directory "$REPO_DIR"
-  git remote set-url origin "$FULL_URL" || true
-  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH" || true
-  git -c http.extraHeader="$AUTH_HEADER" fetch origin "$BRANCH" --prune --prune-tags || {
+
+  # FIX permissions before git operations
+  sudo chown -R ubuntu:ubuntu "$REPO_DIR/.git" 2>/dev/null || true
+  sudo chmod -R u+rwX "$REPO_DIR/.git" 2>/dev/null || true
+
+  # UPDATE REMOTE URL WITH TOKEN TEMPORARILY
+  git remote set-url origin "$AUTH_URL"
+
+  # FETCH using the token-embedded URL
+  git fetch origin "$BRANCH" --prune --prune-tags || {
     echo "Fetch failed; check credentials or network."
     exit 1
   }
-  git reset --hard "origin/$BRANCH" || git reset --hard "FETCH_HEAD"
-  git clean -fdx || true
+
+  # Reset and Clean
+  git checkout -B "$BRANCH" "origin/$BRANCH"
+  git reset --hard "origin/$BRANCH"
+  git clean -fdx
+
+  # Restore clean origin URL (do not persist PAT in .git/config)
+  git remote set-url origin "$FULL_URL" || true
 fi
 
 cd "$REPO_DIR"
@@ -573,11 +597,12 @@ REMOTE
             echo "=========================================="
             echo "Pipeline completed successfully! ✓"
             echo "=========================================="
-            echo "Application deployed on EC2 instance: ${env.EC2_HOST ?: 'EC2_HOST not set'}"
-            echo "Access the application at: http://${env.EC2_HOST ?: 'EC2_HOST not set'}:80/"
+            // Avoid Groovy string interpolation with secrets
+            sh 'echo "Application deployed on EC2 instance: ${EC2_HOST:-EC2_HOST_not_set}"'
+            sh 'echo "Access the application at: http://${EC2_HOST:-EC2_HOST_not_set}:80/"'
             echo ""
             echo "Port-forward service is running as systemd service"
-            echo "To check status: ssh ${env.EC2_USER ?: 'ubuntu'}@${env.EC2_HOST ?: 'EC2_HOST not set'} 'sudo systemctl status k8s-port-forward'"
+            sh 'echo "To check status: ssh ${EC2_USER:-ubuntu}@${EC2_HOST:-EC2_HOST_not_set} \"sudo systemctl status k8s-port-forward\""'
         }
         always {
             echo "=========================================="
@@ -590,7 +615,8 @@ REMOTE
             echo "  - Terraform Workspace: ${params.TERRAFORM_WORKSPACE}"
             echo "  - Port Forward: ${params.ENABLE_PORT_FORWARD}"
             echo ""
-            echo "Application URL: http://${env.EC2_HOST ?: 'EC2_HOST not set'}:80/"
+            // Avoid Groovy string interpolation with secrets
+            sh 'echo "Application URL: http://${EC2_HOST:-EC2_HOST_not_set}:80/"'
         }
     }
 }

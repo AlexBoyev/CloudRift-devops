@@ -203,7 +203,7 @@ if sudo -u "${EC2_USER}" -H bash -lc "minikube status -p ${MINIKUBE_PROFILE} 2>/
   echo ' Minikube is already running'
 else
   echo 'Starting Minikube...'
-  if ! sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=3750mb --cpus=2"; then
+  if ! sudo -u "${EC2_USER}" -H bash -lc "minikube start -p ${MINIKUBE_PROFILE} --driver=docker --memory=2750mb --cpus=2"; then
     echo 'WARNING: minikube start reported a non-zero exit code; will rely on Kubernetes API readiness checks.'
   else
     echo ' Minikube started successfully'

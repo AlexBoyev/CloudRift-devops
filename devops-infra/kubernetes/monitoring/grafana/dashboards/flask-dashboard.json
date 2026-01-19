@@ -1,18 +1,30 @@
 {
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
   },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": null,
   "links": [],
   "liveNow": false,
   "panels": [
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -33,6 +45,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -88,8 +101,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(flask_http_request_total[5m])",
+          "editorMode": "code",
+          "expr": "sum(rate(flask_http_request_total[1m]))",
           "legendFormat": "{{method}} {{endpoint}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -99,7 +114,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -120,6 +135,7 @@
               "tooltip": false,
               "viz": false
             },
+            "insertNulls": false,
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
@@ -175,8 +191,10 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m]))",
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum(rate(flask_http_request_duration_seconds_bucket[5m])) by (le)) \r\nOR on() vector(0)",
           "legendFormat": "p95 {{method}} {{endpoint}}",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -186,7 +204,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -206,7 +224,8 @@
                 "value": 1
               }
             ]
-          }
+          },
+          "unit": "percent"
         },
         "overrides": []
       },
@@ -223,20 +242,25 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
+      "pluginVersion": "10.1.5",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(flask_http_request_total{status=~\"5..\"}[5m]))",
+          "editorMode": "code",
+          "expr": "(\r\n  sum(rate(flask_http_request_total{status=~\"5..\"}[1m])) \r\n  / \r\n  (sum(rate(flask_http_request_total[1m])) > 0) \r\n  * 100\r\n) \r\nOR on() vector(0)",
           "legendFormat": "5xx Errors",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -246,7 +270,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "PBFA97CFB590B2093"
       },
       "fieldConfig": {
         "defaults": {
@@ -262,7 +286,8 @@
                 "value": null
               }
             ]
-          }
+          },
+          "unit": "percent"
         },
         "overrides": []
       },
@@ -279,20 +304,25 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
         "textMode": "auto"
       },
+      "pluginVersion": "10.1.5",
       "targets": [
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(rate(flask_http_request_total{status=~\"2..\"}[5m]))",
+          "editorMode": "code",
+          "expr": "(sum(rate(flask_http_request_total{status=~\"2..\"}[1m])) / (sum(rate(flask_http_request_total[1m])) > 0) * 100) OR on() vector(100)",
           "legendFormat": "Successful Requests",
+          "range": true,
           "refId": "A"
         }
       ],
@@ -300,15 +330,18 @@
       "type": "stat"
     }
   ],
-  "refresh": "5s",
+  "refresh": "1m",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["flask", "backend"],
+  "tags": [
+    "flask",
+    "backend"
+  ],
   "templating": {
     "list": []
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-30m",
     "to": "now"
   },
   "timepicker": {},

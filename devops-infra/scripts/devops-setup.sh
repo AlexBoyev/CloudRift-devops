@@ -519,6 +519,15 @@ if [ "$DEPLOY_MONITORING" = "true" ]; then
   fi
 fi
 
+print_header "Step 6b: Forcing Update of Running Pods"
+
+echo "♻️  Restarting Deployments to pick up the new Docker images..."
+kubectl rollout restart deployment backend-deployment
+kubectl rollout restart deployment stack-deployment
+kubectl rollout restart deployment linkedlist-deployment
+kubectl rollout restart deployment graph-deployment
+
+
 # -----------------------------
 # Wait for deployments
 # -----------------------------

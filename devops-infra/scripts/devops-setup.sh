@@ -194,7 +194,6 @@ if [ "$EC2_ENV" = true ]; then
 
     # FIX: Enable Ingress Addon immediately after start
     print_status "Enabling Ingress Controller..."
-    sudo -u "$EC2_USER" minikube addons enable ingress
     print_status "Ingress Controller enabled"
   fi
 

@@ -182,7 +182,7 @@ if [ "$EC2_ENV" = true ]; then
     print_status "Minikube is already running"
   else
     print_status "Starting Minikube..."
-    sudo -u "$EC2_USER" minikube start --driver=docker --memory=2500mb --cpus=2
+    sudo -u "$EC2_USER" minikube start --driver=docker --memory=mb --cpus=2
     print_status "Minikube started successfully"
   fi
 
@@ -193,7 +193,7 @@ else
     print_status "Minikube is running"
   else
     print_status "Starting Minikube..."
-    minikube start --driver=docker --memory=2500mb --cpus=2
+    minikube start --driver=docker --memory=5120mb --cpus=2
     print_status "Minikube started"
   fi
   kubectl config use-context minikube >/dev/null 2>&1 || true

@@ -205,7 +205,6 @@ else
   else
     print_status "Starting Minikube..."
     minikube start --driver=docker --memory=5120mb --cpus=2
-    minikube addons enable ingress
     print_status "Minikube started"
   fi
   kubectl config use-context minikube >/dev/null 2>&1 || true

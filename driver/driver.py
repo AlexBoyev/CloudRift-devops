@@ -29,7 +29,6 @@ owner: str = ""              # Must match IAM username if policy enforces aws:Re
 # -----------------------------
 # Constants
 # -----------------------------
-#github & jenkins test
 
 DEFAULT_GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 ENV_FILE_NAME = ".env"

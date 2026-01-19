@@ -14,7 +14,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# FIX: Log function defined
+# FIX: Log function defined to match your style
 log() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_status()  { echo -e "${GREEN}✓${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
@@ -128,12 +128,18 @@ else
   exit 1
 fi
 
-# Check Helm (optional)
+# Check Helm (Now required for Monitoring fix)
 if command_exists helm; then
   HELM_VERSION="$(helm version --short 2>/dev/null || true)"
   print_status "Helm installed: ${HELM_VERSION:-unknown}"
 else
-  print_warning "Helm is not installed (optional)"
+  if [ "$DEPLOY_MONITORING" = "true" ]; then
+      print_warning "Helm not found. Installing Helm automatically for monitoring..."
+      curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash >/dev/null 2>&1
+      print_status "Helm installed successfully"
+  else
+      print_warning "Helm is not installed (optional)"
+  fi
 fi
 
 # Check Git
@@ -182,8 +188,14 @@ if [ "$EC2_ENV" = true ]; then
     print_status "Minikube is already running"
   else
     print_status "Starting Minikube..."
+    # FIX: Explicit memory setting to 5120mb
     sudo -u "$EC2_USER" minikube start --driver=docker --memory=5120mb --cpus=2
     print_status "Minikube started successfully"
+
+    # FIX: Enable Ingress Addon immediately after start
+    print_status "Enabling Ingress Controller..."
+    sudo -u "$EC2_USER" minikube addons enable ingress
+    print_status "Ingress Controller enabled"
   fi
 
   sudo -u "$EC2_USER" kubectl config use-context minikube >/dev/null 2>&1 || true
@@ -194,6 +206,7 @@ else
   else
     print_status "Starting Minikube..."
     minikube start --driver=docker --memory=5120mb --cpus=2
+    minikube addons enable ingress
     print_status "Minikube started"
   fi
   kubectl config use-context minikube >/dev/null 2>&1 || true
@@ -229,8 +242,6 @@ _repo_auth_url() {
 
   if [ -n "${GITHUB_PAT:-}" ]; then
     if [ -z "${GITHUB_USER:-}" ]; then
-      # GitHub accepts PAT as username in practice, but we avoid guessing.
-      # Use "git" if user wasn't provided.
       GITHUB_USER="git"
     fi
     echo "https://${GITHUB_USER}:${GITHUB_PAT}@${normalized#https://}"
@@ -264,26 +275,23 @@ ensure_repo() {
   else
     print_status "$repo_name repository already exists"
     if [ "$EC2_ENV" = true ]; then
-    sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir/.git" 2>/dev/null || true
-    sudo chmod -R u+rwX "$target_dir/.git" 2>/dev/null || true
+      sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir/.git" 2>/dev/null || true
+      sudo chmod -R u+rwX "$target_dir/.git" 2>/dev/null || true
     fi
     # Use auth URL for fetch/pull if PAT exists
     git -C "$target_dir" remote set-url origin "$auth_url" >/dev/null 2>&1 || true
     git -C "$target_dir" fetch --all --tags >/dev/null 2>&1 || true
-    # Reset to origin/main to avoid drift (matches your original behavior)
+    # Reset to origin/main to avoid drift
     git -C "$target_dir" fetch origin main >/dev/null 2>&1 || true
     git -C "$target_dir" reset --hard origin/main >/dev/null 2>&1 || true
     print_status "$repo_name repository updated from remote"
   fi
 
-# Always reset remote to clean URL (avoid leaving PAT in git config)
+  # Always reset remote to clean URL
   git -C "$target_dir" remote set-url origin "$clean_url" >/dev/null 2>&1 || true
 
-  # --- FIX: FORCE PERMISSIONS FOR JENKINS ---
-  # Ensure the entire repo is owned by the EC2 user (ubuntu)
-  # This prevents "Permission Denied" errors when Jenkins tries to fetch later.
+  # FIX: FORCE PERMISSIONS
   if [ "$EC2_ENV" = true ]; then
-     # using -R to fix the whole tree, not just .git
      sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir" 2>/dev/null || true
      sudo chmod -R u+rwX "$target_dir" 2>/dev/null || true
   fi
@@ -381,18 +389,22 @@ if [ "$SKIP_BUILD" = "false" ]; then
       return 1
     fi
 
-    if $DOCKER_CMD build -f "$context/$dockerfile" -t "$image_name" "$context" 2>&1 | tee /tmp/docker-build.log; then
-      if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
-        print_status "$display_name built successfully"
-        IMAGES_BUILT=$((IMAGES_BUILT + 1))
-        return 0
+    # FIX: Added simple retry logic
+    if ! $DOCKER_CMD build -f "$context/$dockerfile" -t "$image_name" "$context" 2>&1 | tee /tmp/docker-build.log; then
+      echo "  ⚠ First attempt failed. Retrying..."
+      if ! $DOCKER_CMD build -f "$context/$dockerfile" -t "$image_name" "$context"; then
+         print_error "$display_name build failed"
+         IMAGES_FAILED=$((IMAGES_FAILED + 1))
+         return 1
       fi
-      print_error "$display_name build reported success but image not found"
-      IMAGES_FAILED=$((IMAGES_FAILED + 1))
-      return 1
     fi
 
-    print_error "$display_name build failed"
+    if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
+      print_status "$display_name built successfully"
+      IMAGES_BUILT=$((IMAGES_BUILT + 1))
+      return 0
+    fi
+    print_error "$display_name build reported success but image not found"
     IMAGES_FAILED=$((IMAGES_FAILED + 1))
     return 1
   }
@@ -472,22 +484,41 @@ if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
   print_status "NGINX ingress controller deployed"
 fi
 
+# FIX: Monitoring Logic with Helm Fallback
 if [ "$DEPLOY_MONITORING" = "true" ]; then
   print_header "Step 6: Deploying Monitoring Stack"
 
-  echo "Deploying Prometheus..."
-  kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/prometheus/"
-  print_status "Prometheus deployed"
+  # Check if we have the local YAML files first
+  if [ -d "$DEVOPS_INFRA/kubernetes/monitoring/prometheus" ]; then
+      echo "Deploying Prometheus from local YAML..."
+      kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/prometheus/"
 
-  if [ -d "$DEVOPS_INFRA/kubernetes/monitoring/grafana/dashboards" ]; then
-    kubectl create configmap grafana-dashboards \
-      --from-file="$DEVOPS_INFRA/kubernetes/monitoring/grafana/dashboards/" \
-      --dry-run=client -o yaml | kubectl apply -f -
+      if [ -d "$DEVOPS_INFRA/kubernetes/monitoring/grafana/dashboards" ]; then
+        kubectl create configmap grafana-dashboards \
+          --from-file="$DEVOPS_INFRA/kubernetes/monitoring/grafana/dashboards/" \
+          --dry-run=client -o yaml | kubectl apply -f -
+      fi
+
+      echo "Deploying Grafana from local YAML..."
+      kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/grafana/"
+      print_status "Monitoring stack deployed via YAML"
+  else
+      # Fallback to Helm if files are missing
+      print_status "Monitoring YAMLs not found. Installing via Helm..."
+
+      # Add repo if missing
+      helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
+      helm repo update >/dev/null 2>&1 || true
+
+      # Install
+      helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+        --create-namespace \
+        --namespace monitoring \
+        --set grafana.service.type=ClusterIP \
+        --wait --timeout=5m >/dev/null 2>&1
+
+      print_status "Prometheus & Grafana installed via Helm"
   fi
-
-  echo "Deploying Grafana..."
-  kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/grafana/"
-  print_status "Grafana deployed"
 fi
 
 # -----------------------------
@@ -518,10 +549,7 @@ fi
 if [ "$EC2_ENV" = true ]; then
   echo "Setting up Systemd Service on EC2 for Auto-Start..."
 
-  # FIX: We now handle the port-forward permission correctly
-  # 1. Minikube starts as 'ubuntu' (required)
-  # 2. Port-forward runs as 'root' (required for port 80), using ubuntu's config
-
+  # FIX: Start Script (Runs as Root, invokes Minikube as Ubuntu)
   cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
 #!/bin/bash
 set -e
@@ -537,9 +565,8 @@ echo "Waiting for Ingress Controller..."
 runuser -l ubuntu -c 'kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s' || true
 
 echo "Starting Port Forward..."
-# IMPORTANT: This runs as ROOT because the service calls it as root.
+# IMPORTANT: This runs as ROOT to allow binding port 80.
 # We explicitly point to ubuntu's kubeconfig so kubectl works.
-# This allows binding to privileged port 80.
 export KUBECONFIG=/home/ubuntu/.kube/config
 /usr/local/bin/kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
 EOF
@@ -620,9 +647,9 @@ if [ "$EC2_ENV" = true ]; then
 
   if [ "$DEPLOY_MONITORING" = "true" ]; then
     echo ""
-    echo -e "${BLUE}Monitoring (port-forward required):${NC}"
-    echo "  - Prometheus: kubectl port-forward svc/prometheus-service 9090:9090"
-    echo "  - Grafana:    kubectl port-forward svc/grafana-service 3000:3000"
+    echo -e "${BLUE}Monitoring (Port Forward Required):${NC}"
+    echo "  - Prometheus: kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090"
+    echo "  - Grafana:    kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80"
   fi
 
   echo ""
@@ -635,13 +662,6 @@ else
   echo -e "${GREEN}Application is accessible at:${NC}"
   echo -e "  - Frontend: ${YELLOW}http://${MINIKUBE_IP}:32080/${NC}"
   echo -e "  - API:      ${YELLOW}http://${MINIKUBE_IP}:32080/api/${NC}"
-
-  if [ "$DEPLOY_MONITORING" = "true" ]; then
-    echo ""
-    echo -e "${BLUE}Monitoring:${NC}"
-    echo "  - Prometheus: kubectl port-forward svc/prometheus-service 9090:9090"
-    echo "  - Grafana:    kubectl port-forward svc/grafana-service 3000:3000"
-  fi
 fi
 
 print_header "Setup Complete!"

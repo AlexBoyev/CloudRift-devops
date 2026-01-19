@@ -107,11 +107,16 @@ SCRIPT
         }
         
         stage('Build Docker Image on EC2') {
+            options {
+                // RETRY LOGIC: If network fails/EOF, retry 3 times automatically
+                retry(3)
+                timeout(time: 20, unit: 'MINUTES')
+            }
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+                           "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 cd "$API_DIR"
@@ -150,7 +155,7 @@ SCRIPT
                 }
             }
         }
-        
+
         stage('Deploy to Kubernetes on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
@@ -158,17 +163,17 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                             REPO_DIR='${REPO_DIR}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
-                            
+
                             cd \${REPO_DIR}
-                            
+
                             # Ensure kubectl context is set
                             kubectl config use-context \${MINIKUBE_PROFILE} || true
-                            
+
                             # Ensure database is present before backend rollout
                             kubectl apply -f devops-infra/kubernetes/database/secret.yaml || true
                             kubectl apply -f devops-infra/kubernetes/database/service.yaml || true
                             kubectl apply -f devops-infra/kubernetes/database/statefulset.yaml || true
-                            
+
                             # Apply Kubernetes manifests
                             kubectl apply -f devops-infra/kubernetes/backend/configmap.yaml || true
                             kubectl apply -f devops-infra/kubernetes/backend/secret.yaml || true
@@ -176,30 +181,30 @@ SCRIPT
                             kubectl apply -f devops-infra/kubernetes/backend/service.yaml || true
                             kubectl apply -f devops-infra/kubernetes/ingress/ingress.yaml || true
                             kubectl apply -f devops-infra/kubernetes/backend/hpa.yaml || true
-                            
+
                             # Deploy data structure services (from backend repo)
                             kubectl apply -f devops-infra/kubernetes/data-structures/stack.yaml || true
                             kubectl apply -f devops-infra/kubernetes/data-structures/linkedlist.yaml || true
                             kubectl apply -f devops-infra/kubernetes/data-structures/graph.yaml || true
-                            
+
                             # Wait for rollout
                             kubectl rollout status deployment/backend-deployment --timeout=300s || true
-                            
+
                             echo ''
                             echo '=== Backend Service ==='
                             kubectl get service backend-service -o wide || true
-                            
+
                             echo ''
                             echo '=== Data Structure Pods ==='
                             kubectl get pods -l 'app in (stack-service,linkedlist-service,graph-service)' || true
-                            
+
                             echo '✓ Backend deployed successfully'
                         "
                     '''
                 }
             }
         }
-        
+
         stage('Health Check') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
@@ -207,12 +212,12 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                             # Wait for pods to be ready
                             kubectl wait --for=condition=ready pod -l app=backend --timeout=120s || true
-                            
+
                             # Get pod status
                             echo ''
                             echo '=== Backend Pods ==='
                             kubectl get pods -l app=backend -o wide
-                            
+
                             echo '✓ Health check passed'
                         "
                     '''
@@ -220,7 +225,7 @@ SCRIPT
             }
         }
     }
-    
+
     post {
         success {
             echo "=========================================="

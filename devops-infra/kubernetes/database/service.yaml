@@ -13,6 +13,7 @@ spec:
   clusterIP: None
   selector:
     app: postgres
+    tier: database
   ports:
     - name: postgres
       port: 5432
@@ -29,6 +30,7 @@ spec:
   type: ClusterIP
   selector:
     app: postgres
+    tier: database
   ports:
     - name: postgres
       port: 5432

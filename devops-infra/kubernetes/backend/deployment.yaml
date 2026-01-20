@@ -27,10 +27,14 @@ spec:
         prometheus.io/port: "5000"
         prometheus.io/path: "/metrics"
     spec:
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.28
+          command: [ 'sh', '-c', "until nc -zv postgres-service 5432; do echo waiting for postgres; sleep 2; done" ]
       containers:
       - name: backend
         image: backend-service:latest
-        imagePullPolicy: Never
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 5000
           name: http

@@ -443,26 +443,39 @@ fi
 # -----------------------------
 # Deploy Kubernetes resources
 # -----------------------------
-print_header "Step 5: Deploying Kubernetes Resources"
+print_header "Step 5: Deploying Kubernetes Resources with Dependency Logic"
 
-DEVOPS_INFRA="$REPO_ROOT/devops-infra"
-echo "Deploying Kubernetes resources from: $DEVOPS_INFRA"
+# 1. Apply Namespaces and Secrets first
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/secret.yaml"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret (1).yaml"
 
-echo "Applying namespaces..."
-kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/" 2>/dev/null || true
-print_status "Namespaces applied"
-
-echo "Deploying database..."
+# 2. Deploy Database (The Foundation)
+log "Deploying Database..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/"
-print_status "Database deployed"
+# Wait for the database pod to be ready based on its readinessProbe (pg_isready)
+kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
+print_status "Database is online and ready"
 
-echo "Deploying frontend..."
-kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
-print_status "Frontend deployed"
+# 3. Deploy Data Structure Services
+log "Deploying Microservices (Stack, LinkedList, Graph)..."
+if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
+  kubectl apply -f "$DEVOPS_INFRA/kubernetes/data-structures/"
+  kubectl wait --for=condition=ready pod -l tier=service --timeout=120s
+  print_status "Data structure services are ready"
+fi
 
-echo "Deploying backend..."
+# 4. Deploy Backend (Depends on Database)
+log "Deploying Backend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/"
-print_status "Backend deployed"
+kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
+print_status "Backend is ready"
+
+# 5. Deploy Frontend and Ingress
+log "Deploying Frontend and Ingress..."
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
+print_status "Deployment Complete"
 
 echo "Deploying data structure services..."
 if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
@@ -554,28 +567,43 @@ if [ -z "$KUBECTL_PATH" ]; then
 fi
 
 if [ "$EC2_ENV" = true ]; then
-  echo "Setting up Systemd Service on EC2 for Auto-Start..."
+  print_status "Setting up Systemd Service on EC2 for Auto-Start..."
 
-  # FIX: Start Script (Runs as Root, invokes Minikube as Ubuntu)
+  # 1. Create the resilient Start Script
   cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# Log output for debugging
+# Redirect all output to syslog for 'journalctl -u cloudrift'
 exec 1> >(logger -s -t $(basename $0)) 2>&1
 
-echo "Ensuring Minikube is running..."
-# Start Minikube as ubuntu user
-runuser -l ubuntu -c 'minikube start --driver=docker'
+TARGET_USER="ubuntu"
+KUBECONFIG_PATH="/home/${TARGET_USER}/.kube/config"
 
-echo "Waiting for Ingress Controller..."
-runuser -l ubuntu -c 'kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=120s' || true
+echo "Ensuring Minikube is started..."
+# --wait=all prevents the script from racing ahead of the API server
+sudo -u "$TARGET_USER" minikube start --driver=docker --wait=all
 
-echo "Starting Port Forward..."
-# IMPORTANT: This runs as ROOT to allow binding port 80.
-# We explicitly point to ubuntu's kubeconfig so kubectl works.
-export KUBECONFIG=/home/ubuntu/.kube/config
-/usr/local/bin/kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
+echo "Refreshing context..."
+sudo -u "$TARGET_USER" minikube update-context
+
+echo "Waiting for API Server readiness..."
+until sudo -u "$TARGET_USER" /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" cluster-info; do
+  echo "Still waiting for Kubernetes API..."
+  sleep 5
+done
+
+echo "Verifying Ingress health..."
+sudo -u "$TARGET_USER" /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" \
+  rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s || true
+
+echo "Starting Port Forward (Port 80)..."
+# Loop keeps the forward alive and prevents a single failure from killing the service
+while true; do
+  /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" port-forward \
+    -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0 || echo "Restarting port-forward..."
+  sleep 10
+done
 EOF
 
   sudo chmod +x /usr/local/bin/start-cloudrift.sh
@@ -583,6 +611,8 @@ EOF
 
   # 2. Create the Systemd Service
   cat << 'EOF' | sudo tee /etc/systemd/system/cloudrift.service > /dev/null
+
+
 [Unit]
 Description=CloudRift Application (Minikube + PortForward)
 After=docker.service network.target

@@ -28,7 +28,7 @@ owner: str = ""              # Must match IAM username if policy enforces aws:Re
 
 # -----------------------------
 # Constants
-# -----------------------------
+# -----------------------------2
 
 DEFAULT_GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 ENV_FILE_NAME = ".env"

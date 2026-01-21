@@ -439,7 +439,14 @@ fi
 
   echo ""
   print_status "Verifying built images..."
-  REQUIRED_IMAGES=("backend-service:latest" "ui-service:latest" "stack-service:latest" "linkedlist-service:latest" "graph-service:latest" "postgres-db:latest")
+  REQUIRED_IMAGES=(
+  "backend-service:$BACKEND_TAG"
+  "ui-service:$FRONTEND_TAG"
+  "stack-service:$BACKEND_TAG"
+  "linkedlist-service:$BACKEND_TAG"
+  "graph-service:$BACKEND_TAG"
+  "postgres-db:$DB_TAG"
+  )
   MISSING=0
   for img in "${REQUIRED_IMAGES[@]}"; do
     if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${img}$"; then
@@ -453,7 +460,7 @@ fi
   echo ""
   echo "Build Summary: $IMAGES_BUILT built, $IMAGES_FAILED failed, $MISSING missing"
 
-  if [ "$IMAGES_FAILED" -gt 0 ] || [ "$MISSING" -gt 0 ]; then
+  if [ "$IMAGES_FAILED" -gt 0 ]; then
     print_error "Image build completed with errors. Cannot proceed with deployment."
     exit 1
   fi

@@ -509,21 +509,24 @@ kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret.yaml"
 log "Deploying Database..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/"
 # Wait for the database pod to be ready based on its readinessProbe (pg_isready)
-kubectl wait --for=condition=ready pod -l app=postgres --timeout=120s
+kubectl rollout status statefulset/postgres-db --timeout=120s
 print_status "Database is online and ready"
 
 # 3. Deploy Data Structure Services
 log "Deploying Microservices (Stack, LinkedList, Graph)..."
 if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/data-structures/"
-  kubectl wait --for=condition=ready pod -l tier=service --timeout=120s
+  kubectl rollout status deployment/stack-deployment --timeout=120s
+  kubectl rollout status deployment/linkedlist-deployment --timeout=120s
+  kubectl rollout status deployment/graph-deployment --timeout=120s
+
   print_status "Data structure services are ready"
 fi
 
 # 4. Deploy Backend (Depends on Database)
 log "Deploying Backend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/"
-kubectl wait --for=condition=ready pod -l app=backend --timeout=120s
+kubectl rollout status deployment/backend-deployment --timeout=120s
 print_status "Backend is ready"
 
 # 5. Deploy Frontend and Ingress

@@ -16,7 +16,7 @@ spec:
   rules:
     - http:
         paths:
-          # Data structure services
+          # Data structure services (Keep these as Prefix)
           - path: /stack
             pathType: Prefix
             backend:
@@ -24,7 +24,7 @@ spec:
                 name: stack-service
                 port:
                   number: 5001
-          
+
           - path: /linkedlist
             pathType: Prefix
             backend:
@@ -32,7 +32,7 @@ spec:
                 name: linkedlist-service
                 port:
                   number: 5002
-          
+
           - path: /graph
             pathType: Prefix
             backend:
@@ -40,7 +40,7 @@ spec:
                 name: graph-service
                 port:
                   number: 5003
-          
+
           - path: /prometheus
             pathType: Prefix
             backend:
@@ -48,7 +48,7 @@ spec:
                 name: prometheus-service
                 port:
                   number: 9090
-          
+
           # Monitoring
           - path: /grafana
             pathType: Prefix
@@ -57,7 +57,7 @@ spec:
                 name: grafana-service
                 port:
                   number: 3000
-          
+
           # Frontend UI - catch-all for everything else
           - path: /
             pathType: Prefix
@@ -82,8 +82,9 @@ spec:
   rules:
     - http:
         paths:
+          # This is the ONLY one that changes to ImplementationSpecific
           - path: /api/?(.*)
-            pathType: Prefix
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: backend-service

@@ -346,7 +346,9 @@ if [ -d "$REPO_DIR/devops-infra/kubernetes" ]; then
     find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(BACKEND_TAG)/latest/g' {} +
     find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(FRONTEND_TAG)/latest/g' {} +
     find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(DB_TAG)/latest/g' {} +
-    print_status "YAML files patched: $(BACKEND_TAG) -> latest"
+    log "Patching imagePullPolicy to allow local images..."
+    find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/imagePullPolicy: Always/imagePullPolicy: IfNotPresent/g' {} +
+    print_status "YAML files patched: Tags -> latest, Policy -> IfNotPresent"
 else
     print_warning "Kubernetes directory not found for patching"
 fi

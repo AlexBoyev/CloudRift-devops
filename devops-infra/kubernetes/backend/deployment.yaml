@@ -121,4 +121,3 @@ spec:
         # NEW: Backend tag env var - injected by Jenkins
         - name: BACKEND_TAG
           value: "latest"
----

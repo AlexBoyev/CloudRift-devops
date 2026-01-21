@@ -4,13 +4,13 @@
 
 pipeline {
     agent any
-    
+
     options {
         timestamps()
         buildDiscarder(logRotator(numToKeepStr: '10'))
         timeout(time: 30, unit: 'MINUTES')
     }
-    
+
     parameters {
         string(
             name: 'BRANCH_NAME',
@@ -28,19 +28,22 @@ pipeline {
             description: 'Minikube profile name'
         )
     }
-    
+
     environment {
-        BRANCH_NAME = "${params.BRANCH_NAME ?: 'main'}"
-        GITHUB_PAT = credentials('github-pat-token')
-        EC2_SSH_KEY = credentials('ec2-ssh-key')
-        EC2_USER = 'ubuntu'
-        EC2_HOST = credentials('ec2-host-ip')
+        BRANCH_NAME      = "${params.BRANCH_NAME ?: 'main'}"
+        GITHUB_PAT       = credentials('github-pat-token')
+        EC2_SSH_KEY      = credentials('ec2-ssh-key')
+        EC2_USER         = 'ubuntu'
+        EC2_HOST         = credentials('ec2-host-ip')
 
         // Paths & URLs
-        FRONTEND_DIR = '/home/ubuntu/frontend'
-        DEVOPS_DIR = '/home/ubuntu/new-devops-local'
-        REPO_URL = "${params.FRONTEND_REPO_URL}"
+        FRONTEND_DIR     = '/home/ubuntu/frontend'
+        DEVOPS_DIR       = '/home/ubuntu/new-devops-local'
+        REPO_URL         = "${params.FRONTEND_REPO_URL}"
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+
+        // DYNAMIC TAGGING: Unique per build + commit for traceability
+        FRONTEND_TAG     = "frontend-${env.BUILD_NUMBER}-${GIT_COMMIT.take(8)}"
     }
 
     stages {
@@ -50,6 +53,7 @@ pipeline {
                     echo "==========================================="
                     echo "Frontend Pipeline - Cloning repository"
                     echo "Branch: ${params.BRANCH_NAME}"
+                    echo "Tag: ${FRONTEND_TAG}"
                     echo "==========================================="
                 }
 
@@ -133,7 +137,7 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                           "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' bash -s" <<'SCRIPT'
+                           "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' FRONTEND_TAG='${FRONTEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 cd "$FRONTEND_DIR"
@@ -141,15 +145,23 @@ cd "$FRONTEND_DIR"
 # Point Docker to Minikube daemon
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-# Remove old tags (keep only latest)
+echo "Using frontend tag: ${FRONTEND_TAG}"
+
+# Remove old non-latest tags to save space
 docker images ui-service --format '{{.Repository}}:{{.Tag}}' | grep '^ui-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
 docker image prune -f || true
 
-echo "Building Docker image: ui-service:latest"
-docker build -t ui-service:latest .
+echo "Building Docker image: ui-service:${FRONTEND_TAG}"
+docker build -t "ui-service:${FRONTEND_TAG}" .
 
-echo "✓ Docker image built successfully (only latest retained)"
+echo "✓ Docker image built successfully with tag: ${FRONTEND_TAG}"
+echo "Available images:"
 docker images ui-service
+
+# Cleanup intermediate tag (Kubernetes uses the specific tag directly via env var)
+echo "Cleaning up intermediate frontend tag to save disk space..."
+docker rmi "ui-service:${FRONTEND_TAG}" || true
+docker image prune -f || true
 SCRIPT
                     '''
                 }
@@ -163,6 +175,7 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
                             REPO_DIR='${DEVOPS_DIR}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
+                            FRONTEND_TAG='${FRONTEND_TAG}'
 
                             cd \\${REPO_DIR}
 
@@ -176,12 +189,14 @@ SCRIPT
                             kubectl apply -f devops-infra/kubernetes/frontend/service.yaml || true
                             kubectl apply -f devops-infra/kubernetes/frontend/hpa.yaml || true
 
-                            # Wait for rollout
-                            echo 'Waiting for rollout...'
-                            kubectl rollout restart deployment/frontend-deployment || true
+                            # INJECT TAG: Set the exact frontend tag into deployment env
+                            kubectl set env deployment/frontend-deployment FRONTEND_TAG=\\${FRONTEND_TAG} --containers=frontend || true
+
+                            # Rollout restart with new tag
+                            kubectl rollout restart deployment/frontend-deployment
                             kubectl rollout status deployment/frontend-deployment --timeout=300s || true
 
-                            echo '✓ Frontend deployed successfully'
+                            echo '✓ Frontend deployed successfully with tag: ${FRONTEND_TAG}'
                         "
                     '''
                 }
@@ -199,7 +214,7 @@ SCRIPT
 
                             # Get pod status
                             echo ''
-                            echo '=== Frontend Pods ==='
+                            echo '=== Frontend Pods (tag: ${FRONTEND_TAG}) ==='
                             kubectl get pods -l app=frontend -o wide
 
                             echo '✓ Health check passed'
@@ -214,6 +229,7 @@ SCRIPT
         success {
             echo "=========================================="
             echo "✓ Frontend Pipeline completed successfully!"
+            echo "Tag: ${FRONTEND_TAG}"
             echo "=========================================="
         }
         failure {

@@ -1,5 +1,6 @@
 # Backend Deployment
 # Enhanced deployment with resource limits, probes, and environment configuration
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,13 +29,14 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       initContainers:
-        - name: wait-for-postgres
-          image: busybox:1.28
-          command: [ 'sh', '-c', "until nc -zv postgres-service 5432; do echo waiting for postgres; sleep 2; done" ]
+      - name: wait-for-postgres
+        image: busybox:1.28
+        command: [ 'sh', '-c', "until nc -zv postgres-service 5432; do echo waiting for postgres; sleep 2; done" ]
       containers:
       - name: backend
-        image: backend-service:latest
-        imagePullPolicy: IfNotPresent
+        # DYNAMIC TAGGING: Uses env var set by Jenkins
+        image: backend-service:$(BACKEND_TAG)
+        imagePullPolicy: Always  # Force pull new tag
         ports:
         - containerPort: 5000
           name: http
@@ -116,4 +118,7 @@ spec:
               key: GRAPH_SERVICE_URL
         - name: PROMETHEUS_MULTIPROC_DIR
           value: "/tmp"
-
+        # NEW: Backend tag env var - injected by Jenkins
+        - name: BACKEND_TAG
+          value: "latest"
+---

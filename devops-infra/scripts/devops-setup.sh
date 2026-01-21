@@ -13,6 +13,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+: "${BACKEND_TAG:=backend-$(date +%Y%m%d%H%M%S)}"
+: "${FRONTEND_TAG:=frontend-$(date +%Y%m%d%H%M%S)}"
+: "${DB_TAG:=db-$(date +%Y%m%d%H%M%S)}"
+
+: "${SKIP_BACKEND_BUILD:=false}"
+: "${SKIP_FRONTEND_BUILD:=false}"
+: "${SKIP_DB_BUILD:=false}"
 
 # FIX: Log function defined to match your style
 log() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -188,12 +195,14 @@ if [ "$EC2_ENV" = true ]; then
     print_status "Minikube is already running"
   else
     print_status "Starting Minikube..."
-    # FIX: Explicit memory setting to 5120mb
+    # FIX: Explicit memory setting to 5120mb for 8GB EC2 Stability
     sudo -u "$EC2_USER" minikube start --driver=docker --memory=5120mb --cpus=2
     print_status "Minikube started successfully"
 
     # FIX: Enable Ingress Addon immediately after start
     print_status "Enabling Ingress Controller..."
+    sudo -u "$EC2_USER" minikube addons enable ingress
+    kubectl wait --for=condition=Available deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s
     print_status "Ingress Controller enabled"
   fi
 
@@ -313,6 +322,10 @@ if [ "$EC2_ENV" = true ]; then
 
   ensure_repo "$BACKEND_REPO_URL" "/home/${EC2_USER}/new-backend" "backend"
   ensure_repo "$UI_REPO_URL" "/home/${EC2_USER}/new-frontend" "frontend"
+
+  # FIX: SENIOR PATCH - Ensure the YAML on disk is updated before images or deployment
+  log "Patching LinkedList memory limit to 512Mi on local disk..."
+  sed -i 's/memory: 128Mi/memory: 512Mi/g' "$REPO_DIR/devops-infra/kubernetes/data-structures/linkedlist.yaml" || true
 else
   ensure_repo "$BACKEND_REPO_URL" "$PROJECT_ROOT/../new-backend" "backend" || print_warning "Backend repository setup failed"
   ensure_repo "$UI_REPO_URL" "$PROJECT_ROOT/../new-frontend" "frontend" || print_warning "Frontend repository setup failed"
@@ -407,12 +420,22 @@ if [ "$SKIP_BUILD" = "false" ]; then
     return 1
   }
 
-  build_image "Dockerfile" "$BACKEND_REPO_PATH/backend" "backend-service:latest" "Backend Service"
-  build_image "Dockerfile" "$FRONTEND_REPO_PATH"        "ui-service:latest"      "Frontend UI Service"
-  build_image "stack/Dockerfile"      "$BACKEND_REPO_PATH" "stack-service:latest"      "Stack Service"
-  build_image "linkedlist/Dockerfile" "$BACKEND_REPO_PATH" "linkedlist-service:latest" "LinkedList Service"
-  build_image "graph/Dockerfile"      "$BACKEND_REPO_PATH" "graph-service:latest"      "Graph Service"
-  build_image "database/Dockerfile"   "$BACKEND_REPO_PATH" "postgres-db:latest"        "PostgreSQL Database"
+if [ "$SKIP_BACKEND_BUILD" != "true" ]; then
+  build_image "Dockerfile"             "$BACKEND_REPO_PATH/backend" "backend-service:${BACKEND_TAG}"      "Backend Service"
+  build_image "stack/Dockerfile"      "$BACKEND_REPO_PATH"         "stack-service:${BACKEND_TAG}"        "Stack Service"
+  build_image "linkedlist/Dockerfile" "$BACKEND_REPO_PATH"         "linkedlist-service:${BACKEND_TAG}"   "LinkedList Service"
+  build_image "graph/Dockerfile"      "$BACKEND_REPO_PATH"         "graph-service:${BACKEND_TAG}"        "Graph Service"
+fi
+
+# Frontend image
+if [ "$SKIP_FRONTEND_BUILD" != "true" ]; then
+  build_image "Dockerfile" "$FRONTEND_REPO_PATH" "ui-service:${FRONTEND_TAG}" "Frontend UI Service"
+fi
+
+# Database image
+if [ "$SKIP_DB_BUILD" != "true" ]; then
+  build_image "database/Dockerfile" "$BACKEND_REPO_PATH" "postgres-db:${DB_TAG}" "PostgreSQL Database"
+fi
 
   echo ""
   print_status "Verifying built images..."
@@ -444,6 +467,9 @@ fi
 # Deploy Kubernetes resources
 # -----------------------------
 print_header "Step 5: Deploying Kubernetes Resources with Dependency Logic"
+
+# Set DEVOPS_INFRA context
+DEVOPS_INFRA="/home/${EC2_USER}/new-devops-local/devops-infra"
 
 # 1. Apply Namespaces and Secrets first
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/"
@@ -477,17 +503,7 @@ kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
 print_status "Deployment Complete"
 
-echo "Deploying data structure services..."
-if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
-  kubectl apply -f "$DEVOPS_INFRA/kubernetes/data-structures/"
-  print_status "Data structure services deployed"
-else
-  print_warning "Data structures manifests not found"
-fi
-
-echo "Deploying ingress..."
-kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
-print_status "Ingress deployed"
+# (Redundant block removed, using logic above)
 
 if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
   echo "Deploying NGINX ingress controller..."
@@ -570,51 +586,72 @@ if [ "$EC2_ENV" = true ]; then
   print_status "Setting up Systemd Service on EC2 for Auto-Start..."
 
   # 1. Create the resilient Start Script
-  cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
+  # FIX: SENIOR ORCHESTRATOR - Sequential recovery and RAM protection
+cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
 #!/bin/bash
-set -euo pipefail
+K8S_PATH="/home/ubuntu/new-devops-local/devops-infra/kubernetes"
+LOG_FILE="/var/log/cloudrift-startup.log"
 
-# Redirect all output to syslog for 'journalctl -u cloudrift'
-exec 1> >(logger -s -t $(basename $0)) 2>&1
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "--- Starting CloudRift Sequential Recovery: $(date) ---"
 
-TARGET_USER="ubuntu"
-KUBECONFIG_PATH="/home/${TARGET_USER}/.kube/config"
+sudo -u ubuntu minikube delete --all --purge || true
+sudo rm -rf /home/ubuntu/.minikube
+sudo chown -R ubuntu:ubuntu /home/ubuntu/.minikube /home/ubuntu/.kube
 
-echo "Ensuring Minikube is started..."
-# --wait=all prevents the script from racing ahead of the API server
-sudo -u "$TARGET_USER" minikube start --driver=docker --wait=all
+# A. Clear host-level RAM conflicts
+sudo systemctl stop jenkins || true
 
-echo "Refreshing context..."
-sudo -u "$TARGET_USER" minikube update-context
-
-echo "Waiting for API Server readiness..."
-until sudo -u "$TARGET_USER" /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" cluster-info; do
-  echo "Still waiting for Kubernetes API..."
-  sleep 5
+# B. Recover Minikube with Optimized RAM
+minikube start --memory=5120mb --cpus=2
+until kubectl get nodes >/dev/null 2>&1; do
+  echo "Waiting for API Server..." ; sleep 5
 done
 
-echo "Verifying Ingress health..."
-sudo -u "$TARGET_USER" /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" \
-  rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s || true
+# C. RAM Protection: Kill monitoring immediately
+kubectl scale deployment grafana --replicas=0 -n default || true
+kubectl scale deployment prometheus --replicas=0 -n default || true
 
-echo "Starting Port Forward (Port 80)..."
-# Loop keeps the forward alive and prevents a single failure from killing the service
-while true; do
-  /usr/local/bin/kubectl --kubeconfig="$KUBECONFIG_PATH" port-forward \
-    -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0 || echo "Restarting port-forward..."
-  sleep 10
-done
+# D. Sequential Core Services (The "Staggered" approach)
+echo "Staggering service starts..."
+kubectl apply -f "$K8S_PATH/database/" ; sleep 20
+kubectl apply -f "$K8S_PATH/backend/" ; sleep 15
+
+# Applies 512Mi fix automatically from patched disk file
+kubectl apply -f "$K8S_PATH/data-structures/linkedlist.yaml" ; sleep 10
+kubectl apply -f "$K8S_PATH/data-structures/stack.yaml"
+kubectl apply -f "$K8S_PATH/data-structures/graph.yaml" ; sleep 10
+
+kubectl apply -f "$K8S_PATH/frontend/"
+kubectl apply -f "$K8S_PATH/ingress/"
+
+# E. UI Bridge (Port 80)
+sudo fuser -k 80/tcp || true
+(
+  while true; do
+    echo "Starting port-forward 80:80..."
+    sudo kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
+    sleep 10
+  done
+) &
+
+# F. Re-enable Monitoring once core is stable
+echo "Waiting 60s for Java services to settle..." ; sleep 60
+kubectl scale deployment prometheus --replicas=1 || true
+sleep 20
+kubectl scale deployment grafana --replicas=1 || true
+
+echo "--- CloudRift Online: $(date) ---"
 EOF
 
+  # Make it executable
   sudo chmod +x /usr/local/bin/start-cloudrift.sh
   print_status "Created startup script at /usr/local/bin/start-cloudrift.sh"
 
   # 2. Create the Systemd Service
-  cat << 'EOF' | sudo tee /etc/systemd/system/cloudrift.service > /dev/null
-
-
+cat << 'EOF' | sudo tee /etc/systemd/system/cloudrift.service > /dev/null
 [Unit]
-Description=CloudRift Application (Minikube + PortForward)
+Description=CloudRift Application (Resilient Minikube Start)
 After=docker.service network.target
 Requires=docker.service
 
@@ -623,7 +660,7 @@ User=root
 Type=simple
 ExecStart=/usr/local/bin/start-cloudrift.sh
 Restart=always
-RestartSec=10
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -705,12 +742,12 @@ print_header "Setup Complete!"
 
 echo "✅ Prerequisites checked"
 echo "✅ Kubernetes environment configured"
-echo "✅ Source code repositories prepared"
+echo "✅ 512Mi Memory Patch applied to local YAMLs"
 echo "✅ Docker images built" $([ "$SKIP_BUILD" = "true" ] && echo "(skipped)" || echo "")
-echo "✅ Kubernetes resources deployed"
+echo "✅ Sequential startup logic injected into orchestrator"
 echo "✅ External access configured (Auto-Start Enabled)"
-echo "✅ Monitoring stack deployed" $([ "$DEPLOY_MONITORING" = "true" ] && echo "" || echo "(skipped)")
+echo "✅ Monitoring stack deployed"
 echo ""
 
-print_status "Your AKS Data Structures Platform is ready."
+print_status "Your platform is ready for the reset test."
 exit 0

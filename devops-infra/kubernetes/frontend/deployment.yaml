@@ -1,5 +1,6 @@
 # Frontend Deployment
 # Enhanced deployment with resource limits, probes, and environment configuration
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,8 +26,9 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: ui-service:latest
-        imagePullPolicy: Never
+        # DYNAMIC TAGGING: Uses env var set by Jenkins
+        image: ui-service:$(FRONTEND_TAG)
+        imagePullPolicy: Always  # Force pull new tag (changed from Never)
         ports:
         - containerPort: 80
           name: http
@@ -56,3 +58,6 @@ spec:
         env:
         - name: API_URL
           value: "http://backend-service:5000/api"
+        # NEW: Frontend tag env var - injected by Jenkins
+        - name: FRONTEND_TAG
+          value: "latest"

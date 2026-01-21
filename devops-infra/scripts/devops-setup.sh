@@ -338,6 +338,19 @@ else
   ensure_repo "$UI_REPO_URL" "$PROJECT_ROOT/../new-frontend" "frontend" || print_warning "Frontend repository setup failed"
 fi
 
+print_header "Step 3b: Patching YAML Templates"
+log "Replacing placeholder tags (e.g., \$(BACKEND_TAG)) in YAMLs with 'latest'..."
+
+# This forces K8s to look for the 'latest' tag we are about to build
+if [ -d "$REPO_DIR/devops-infra/kubernetes" ]; then
+    find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(BACKEND_TAG)/latest/g' {} +
+    find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(FRONTEND_TAG)/latest/g' {} +
+    find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(DB_TAG)/latest/g' {} +
+    print_status "YAML files patched: $(BACKEND_TAG) -> latest"
+else
+    print_warning "Kubernetes directory not found for patching"
+fi
+
 # -----------------------------
 # Build Docker images
 # -----------------------------

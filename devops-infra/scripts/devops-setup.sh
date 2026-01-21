@@ -481,7 +481,7 @@ DEVOPS_INFRA="/home/${EC2_USER}/new-devops-local/devops-infra"
 # 1. Apply Namespaces and Secrets first
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/secret.yaml"
-kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret (1).yaml"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret.yaml"
 
 # 2. Deploy Database (The Foundation)
 log "Deploying Database..."

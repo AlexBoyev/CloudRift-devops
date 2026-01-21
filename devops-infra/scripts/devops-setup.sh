@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DevOps Infrastructure Setup Script
+# DevOps Infrastructure Setup Script - FIXED & COMPLETE
 # Complete one-click deployment for AKS Data Structures Platform
 # This script handles the full deployment after AWS infrastructure is ready
 
@@ -46,8 +46,15 @@ USE_HELM="${3:-false}"
 SKIP_BUILD="${4:-false}"
 
 # -----------------------------
-# IMPORTANT: NO .env LOADING ON EC2
+# FIX 1: Robust .env LOADING
 # -----------------------------
+# Loads variables even if they are missing 'export' in the file
+# stripping Windows carriage returns (\r) to prevent syntax errors
+if [ -f "/home/${USER}/.env" ]; then
+    log "Loading environment variables from /home/${USER}/.env..."
+    export $(grep -v '^#' "/home/${USER}/.env" | sed 's/\r$//' | xargs)
+fi
+
 : "${DEVOPS_REPO_URL:?DEVOPS_REPO_URL must be provided via environment}"
 : "${API_REPO_URL:?API_REPO_URL must be provided via environment}"
 : "${FRONTEND_REPO_URL:?FRONTEND_REPO_URL must be provided via environment}"
@@ -411,10 +418,25 @@ if [ "$SKIP_BUILD" = "false" ]; then
     fi
 
     if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
-      print_status "$display_name built successfully"
-      IMAGES_BUILT=$((IMAGES_BUILT + 1))
-      return 0
+      # -----------------------------
+      # FIX 2: Double-Tagging Strategy
+      # -----------------------------
+      # Extracts "backend-service" from "backend-service:backend-12345"
+      local base_img
+      base_img=$(echo "$image_name" | cut -d':' -f1)
+
+      # Tag as latest so K8s YAMLs (which expect :latest) can find it
+      if $DOCKER_CMD tag "$image_name" "${base_img}:latest"; then
+          print_status "$display_name built as $image_name and tagged as ${base_img}:latest"
+          IMAGES_BUILT=$((IMAGES_BUILT + 1))
+          return 0
+      else
+          print_error "Failed to tag $image_name as latest"
+          IMAGES_FAILED=$((IMAGES_FAILED + 1))
+          return 1
+      fi
     fi
+
     print_error "$display_name build reported success but image not found"
     IMAGES_FAILED=$((IMAGES_FAILED + 1))
     return 1
@@ -510,8 +532,6 @@ kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
 print_status "Deployment Complete"
 
-# (Redundant block removed, using logic above)
-
 if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
   echo "Deploying NGINX ingress controller..."
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress-controller/"
@@ -558,6 +578,13 @@ fi
 print_header "Step 6b: Forcing Update of Running Pods"
 
 echo "♻️  Restarting Deployments to pick up the new Docker images..."
+
+# -----------------------------
+# FIX 3: Explicit StatefulSet Restart
+# -----------------------------
+kubectl rollout restart statefulset postgres-db || true
+
+# Restart standard deployments
 kubectl rollout restart deployment backend-deployment
 kubectl rollout restart deployment stack-deployment
 kubectl rollout restart deployment linkedlist-deployment
@@ -569,6 +596,7 @@ kubectl rollout restart deployment graph-deployment
 # -----------------------------
 print_header "Step 7: Waiting for Deployments"
 
+kubectl rollout status statefulset/postgres-db        --timeout=300s 2>/dev/null || print_warning "DB rollout timeout"
 kubectl rollout status deployment/frontend-deployment --timeout=300s 2>/dev/null || print_warning "Frontend rollout timeout"
 kubectl rollout status deployment/backend-deployment  --timeout=300s 2>/dev/null || print_warning "Backend rollout timeout"
 kubectl rollout status deployment/stack-deployment    --timeout=300s 2>/dev/null || print_warning "Stack rollout timeout"

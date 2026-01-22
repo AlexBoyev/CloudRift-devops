@@ -427,7 +427,13 @@ def _clean_env_for_subprocess() -> dict[str, str]:
     return env
 
 
-def _run_bash_script(bash_path: Path, script_name: str, cwd: Path, auto_confirm: bool) -> None:
+def _run_bash_script(
+    bash_path: Path,
+    script_name: str,
+    cwd: Path,
+    auto_confirm: bool,
+    extra_env: dict[str, str] | None = None,
+) -> None:
     """
     - Normalizes CRLF to LF
     - Runs script
@@ -448,15 +454,21 @@ def _run_bash_script(bash_path: Path, script_name: str, cwd: Path, auto_confirm:
     print(f"\nExecuting in: {cwd}")
     print(f'Command: {bash_path} -lc "sed -i \'s/\\r$//\' {script_name}; bash {script_name}"')
 
+    env = _clean_env_for_subprocess()
+    if extra_env:
+        env.update(extra_env)
+
     result = subprocess.run(
         cmd,
         cwd=str(cwd),
         text=True,
-        env=_clean_env_for_subprocess(),
+        env=env,
         input=stdin_payload,
     )
     if result.returncode != 0:
         raise RuntimeError(f"{script_name} failed with exit code {result.returncode}")
+
+
 
 
 # ---------------------------------------------------------------------
@@ -486,16 +498,27 @@ def _provision(p: RepoPaths, bash_path: Path) -> None:
     print("\n[Provision] Writing tfvars and running setup.sh...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
-    _run_bash_script(bash_path, SETUP_SH, p.infra_dir, auto_confirm=False)
+
+    enable_autostart = _prompt_yes_no(
+        "Enable auto-start service (systemd) on the instance?",
+        default_yes=False
+    )
+    extra_env = {"ENABLE_AUTOSTART": "1" if enable_autostart else "0"}
+
+    _run_bash_script(bash_path, SETUP_SH, p.infra_dir, auto_confirm=False, extra_env=extra_env)
     print("[Provision] Completed successfully.")
+
 
 
 def _destroy(p: RepoPaths, bash_path: Path) -> None:
     print("\n[Destroy] Writing tfvars and running destroy.sh (auto-confirm enabled)...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
-    _run_bash_script(bash_path, DESTROY_SH, p.infra_dir, auto_confirm=True)
+    enable_autostart = os.environ.get("ENABLE_AUTOSTART", "0").strip()
+    extra_env = {"ENABLE_AUTOSTART": enable_autostart}
+    _run_bash_script(bash_path, DESTROY_SH, p.infra_dir, auto_confirm=True, extra_env=extra_env)
     print("[Destroy] Completed successfully.")
+
 
 
 # ---------------------------------------------------------------------

@@ -94,6 +94,14 @@ if [ -d /home/ubuntu ]; then
 else
   EC2_ENV=false
   EC2_USER="${USER:-}"
+
+# Auto-start toggle for EC2 systemd service
+ENABLE_AUTOSTART="${ENABLE_AUTOSTART:-1}"
+
+# Ensure kubectl uses ubuntu kubeconfig even if this script is invoked with sudo
+if [ "${EC2_ENV}" = true ]; then
+  export KUBECONFIG="${KUBECONFIG:-/home/ubuntu/.kube/config}"
+fi
 fi
 
 # Check Docker
@@ -738,6 +746,117 @@ EOF
      print_status "CloudRift service enabled and started. App will auto-start on reboot."
   else
      print_warning "CloudRift service failed to start. Check: sudo systemctl status cloudrift"
+  fiprint_status "Setting up Systemd Service on EC2 for Auto-Start..."
+
+  if [ "$ENABLE_AUTOSTART" != "1" ]; then
+    print_warning "Auto-start disabled (ENABLE_AUTOSTART=$ENABLE_AUTOSTART). Skipping systemd setup."
+  else
+    # Create the non-destructive Start Script (no minikube delete/purge; consistent kubeconfig)
+    cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
+#!/bin/bash
+set -euo pipefail
+
+U="ubuntu"
+K8S_PATH="/home/ubuntu/new-devops-local/devops-infra/kubernetes"
+KUBECONFIG_PATH="/home/ubuntu/.kube/config"
+LOG_FILE="/var/log/cloudrift-startup.log"
+
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "--- Starting CloudRift Recovery: $(date) ---"
+
+run_u() { sudo -u "${U}" -H bash -lc "$*"; }
+
+# Ensure docker is up (driver=docker)
+sudo systemctl start docker >/dev/null 2>&1 || true
+
+# Ensure kube dirs exist and owned by ubuntu
+sudo mkdir -p /home/ubuntu/.kube /home/ubuntu/.minikube
+sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube /home/ubuntu/.minikube
+
+# A. Avoid host-level RAM conflicts
+sudo systemctl stop jenkins >/dev/null 2>&1 || true
+
+# B. Start/repair Minikube as ubuntu (NON-DESTRUCTIVE)
+run_u "minikube status --profile=minikube >/dev/null 2>&1 || minikube start --profile=minikube --driver=docker --memory=5120mb --cpus=2"
+
+# C. Wait for API server using ubuntu kubeconfig
+run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; kubectl config use-context minikube >/dev/null 2>&1 || true"
+until sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl get nodes >/dev/null 2>&1; do
+  echo "Waiting for API Server..." ; sleep 5
+done
+
+# D. Apply core manifests (idempotent)
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/database/" || true
+sleep 10
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/backend/" || true
+sleep 10
+
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/data-structures/linkedlist.yaml" || true
+sleep 5
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/data-structures/stack.yaml" || true
+sleep 5
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/data-structures/graph.yaml" || true
+sleep 5
+
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/frontend/" || true
+sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl apply -f "$K8S_PATH/ingress/"  || true
+
+# E. UI Bridge (Port 80): root binds 80, but uses ubuntu kubeconfig
+sudo fuser -k 80/tcp >/dev/null 2>&1 || true
+(
+  while true; do
+    echo "Starting port-forward 80:80..."
+    sudo env KUBECONFIG="${KUBECONFIG_PATH}" kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
+    sleep 10
+  done
+) &
+
+# F. Monitoring (optional): only if the namespace exists
+if sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl get ns monitoring >/dev/null 2>&1; then
+  echo "Waiting 60s for core services to settle..." ; sleep 60
+  sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl scale deployment prometheus --replicas=1 -n monitoring || true
+  sleep 20
+  sudo -u ubuntu -H env KUBECONFIG="${KUBECONFIG_PATH}" kubectl scale deployment grafana --replicas=1 -n monitoring || true
+fi
+
+echo "--- CloudRift Online: $(date) ---"
+EOF
+
+    sudo chmod +x /usr/local/bin/start-cloudrift.sh
+    print_status "Created startup script at /usr/local/bin/start-cloudrift.sh"
+
+    # Create the Systemd Service (explicit kubeconfig + network-online)
+cat << 'EOF' | sudo tee /etc/systemd/system/cloudrift.service > /dev/null
+[Unit]
+Description=CloudRift Application (Non-Destructive Minikube Start)
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+User=root
+Type=simple
+Environment=KUBECONFIG=/home/ubuntu/.kube/config
+ExecStart=/usr/local/bin/start-cloudrift.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    print_status "Created systemd service 'cloudrift.service'"
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable cloudrift
+    sudo systemctl restart cloudrift
+
+    sleep 5
+    if sudo systemctl is-active --quiet cloudrift; then
+       print_status "CloudRift service enabled and started. App will auto-start on reboot."
+    else
+       print_warning "CloudRift service failed to start. Check: sudo systemctl status cloudrift"
+    fi
   fi
 
 else
@@ -755,15 +874,15 @@ fi
 print_header "Deployment Status"
 
 echo "=== Pods ==="
-kubectl get pods -o wide || true
+env KUBECONFIG="$KUBECONFIG" kubectl get pods -o wide || true
 
 echo ""
 echo "=== Services ==="
-kubectl get services || true
+env KUBECONFIG="$KUBECONFIG" kubectl get services || true
 
 echo ""
 echo "=== Ingress ==="
-kubectl get ingress || true
+env KUBECONFIG="$KUBECONFIG" kubectl get ingress || true
 
 echo ""
 echo "=== Nodes ==="

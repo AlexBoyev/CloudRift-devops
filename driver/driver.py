@@ -4,8 +4,14 @@ import os
 import re
 import shutil
 import subprocess
+import json
 from dataclasses import dataclass
 from pathlib import Path
+
+# -----------------------------
+# USER CONFIG: Local Key Path
+# -----------------------------
+STACK_KEY_PATH = r"C:\Users\Alex\CloudRift-3-repos\CloudRift-devops\aws-infrastrucutre-terraform\modules\ec2\keys\stack_key.pem"
 
 # -----------------------------
 # Repo URLs + Git creds (loaded from .env)
@@ -20,16 +26,15 @@ git_pat: str = ""
 # Config loaded from .env
 # -----------------------------
 aws_region: str = ""
-aws_access_token: str = ""   # AWS Access Key ID
-aws_secret_token: str = ""   # AWS Secret Access Key
-aws_session_token: str = ""  # Optional (only for temp creds)
+aws_access_token: str = ""  # AWS Access Key ID
+aws_secret_token: str = ""  # AWS Secret Access Key
+aws_session_token: str = ""  # Optional
 account_id: str = ""
-owner: str = ""              # Must match IAM username if policy enforces aws:RequestTag/Owner == ${aws:username}
+owner: str = ""  # Must match IAM username
 
 # -----------------------------
 # Constants
-# -----------------------------2
-
+# -----------------------------
 DEFAULT_GIT_BASH = r"C:\Program Files\Git\bin\bash.exe"
 ENV_FILE_NAME = ".env"
 
@@ -40,6 +45,7 @@ DESTROY_SH = "destroy.sh"
 ENV_DEV_REL = Path("environments") / "dev"
 DEV_CREDENTIALS = ENV_DEV_REL / "credentials.auto.tfvars"
 DEV_TFVARS = ENV_DEV_REL / "terraform.tfvars"
+
 
 @dataclass
 class RepoPaths:
@@ -77,20 +83,17 @@ def _prompt_yes_no(prompt: str, default_yes: bool = True) -> bool:
 
 
 def _mask_access_key(k: str) -> str:
-    if not k:
-        return "<empty>"
+    if not k: return "<empty>"
     return ("*" * max(0, len(k) - 4)) + k[-4:]
 
 
 def _mask_pat(p: str) -> str:
-    if not p:
-        return "<empty>"
-    # keep last 4
+    if not p: return "<empty>"
     return ("*" * max(0, len(p) - 4)) + p[-4:]
 
 
 # ---------------------------------------------------------------------
-# Robust .env parsing (dotenv and python-like, with inline comment safety)
+# Robust .env parsing
 # ---------------------------------------------------------------------
 def _strip_inline_comment_preserving_quotes(s: str) -> str:
     in_single = False
@@ -119,26 +122,17 @@ def _unquote(s: str) -> str:
 
 
 def _load_env_file(env_path: Path) -> dict[str, str]:
-    """
-    Supports:
-      1) dotenv: KEY=VALUE (quoted/unquoted, supports inline comments)
-      2) python-like: KEY: str = "VALUE"   # comments allowed
-    """
     if not env_path.exists():
         raise FileNotFoundError(f"Missing {ENV_FILE_NAME} next to driver.py: {env_path}")
 
     data: dict[str, str] = {}
     lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
-
     py_like = re.compile(r"""^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*str\s*=\s*(.+?)\s*$""")
 
     for raw in lines:
         line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if line.lower().startswith("export "):
-            line = line[7:].strip()
+        if not line or line.startswith("#"): continue
+        if line.lower().startswith("export "): line = line[7:].strip()
 
         key: str | None = None
         val: str | None = None
@@ -157,7 +151,6 @@ def _load_env_file(env_path: Path) -> dict[str, str]:
         val = _strip_inline_comment_preserving_quotes(val)
         val = _unquote(val)
         data[key] = val
-
     return data
 
 
@@ -169,53 +162,32 @@ def _apply_env(data: dict[str, str]) -> None:
 
     def pick(*names: str) -> str:
         for n in names:
-            if n in data and str(data[n]).strip():
-                return str(data[n]).strip()
+            if n in data and str(data[n]).strip(): return str(data[n]).strip()
         return ""
 
-    # Core AWS/account
     aws_region = pick("AWS_REGION", "aws_region")
     aws_access_token = pick("AWS_ACCESS_TOKEN", "aws_access_token", "AWS_ACCESS", "aws_access")
     aws_secret_token = pick("AWS_SECRET_TOKEN", "aws_secret_token", "AWS_SECRET", "aws_secret")
-    aws_session_token = pick("AWS_SESSION_TOKEN", "aws_session_token")  # optional
+    aws_session_token = pick("AWS_SESSION_TOKEN", "aws_session_token")
     account_id = pick("ACCOUNT_ID", "account_id")
     owner = pick("OWNER", "owner")
 
-    # Repo URLs
     devops_repo_url = pick("DEVOPS_REPO_URL", "devops_repo_url")
-    # backend: accept BACKEND_REPO_URL or API_REPO_URL (your env has both)
     backend_repo_url = pick("BACKEND_REPO_URL", "backend_repo_url", "API_REPO_URL", "api_repo_url")
     frontend_repo_url = pick("FRONTEND_REPO_URL", "frontend_repo_url")
 
-    # Git creds: accept either GITHUB_* or GIT_*
     git_username = pick("GITHUB_USER", "GIT_USERNAME", "git_username")
     git_pat = pick("GITHUB_PAT", "GIT_PAT", "git_pat")
 
     missing = []
-    # Required for terraform provisioning
-    if not aws_region:
-        missing.append("AWS_REGION")
-    if not aws_access_token:
-        missing.append("AWS_ACCESS_TOKEN")
-    if not aws_secret_token:
-        missing.append("AWS_SECRET_TOKEN")
-    if not account_id:
-        missing.append("ACCOUNT_ID")
-    if not owner:
-        missing.append("OWNER")
-    if not devops_repo_url:
-        missing.append("DEVOPS_REPO_URL")
-    if not backend_repo_url:
-        missing.append("BACKEND_REPO_URL (or API_REPO_URL)")
-    if not frontend_repo_url:
-        missing.append("FRONTEND_REPO_URL")
-
-    # Git creds are often required if repos are private; keep them required if you want strictness.
-    # If your repos are public, you can remove these two checks.
-    if not git_username:
-        missing.append("GITHUB_USER (or GIT_USERNAME)")
-    if not git_pat:
-        missing.append("GITHUB_PAT (or GIT_PAT)")
+    if not aws_region: missing.append("AWS_REGION")
+    if not aws_access_token: missing.append("AWS_ACCESS_TOKEN")
+    if not aws_secret_token: missing.append("AWS_SECRET_TOKEN")
+    if not account_id: missing.append("ACCOUNT_ID")
+    if not owner: missing.append("OWNER")
+    if not devops_repo_url: missing.append("DEVOPS_REPO_URL")
+    if not backend_repo_url: missing.append("BACKEND_REPO_URL")
+    if not frontend_repo_url: missing.append("FRONTEND_REPO_URL")
 
     if missing:
         raise ValueError(f"{ENV_FILE_NAME} is missing required keys: {', '.join(missing)}")
@@ -224,18 +196,9 @@ def _apply_env(data: dict[str, str]) -> None:
 def _print_loaded_env(env_path: Path) -> None:
     print("\nLoaded configuration from .env")
     print("-" * 70)
-    print(f".env path:         {env_path}")
     print(f"AWS_REGION:        {aws_region}")
-    print(f"AWS_ACCESS_TOKEN:  {_mask_access_key(aws_access_token)}")
-    print("AWS_SECRET_TOKEN:  ************")
-    print(f"AWS_SESSION_TOKEN: {'yes' if aws_session_token else 'no'}")
     print(f"ACCOUNT_ID:        {account_id}")
     print(f"OWNER:             {owner}")
-    print(f"DEVOPS_REPO_URL:   {devops_repo_url}")
-    print(f"BACKEND_REPO_URL:  {backend_repo_url}")
-    print(f"FRONTEND_REPO_URL: {frontend_repo_url}")
-    print(f"GIT_USERNAME:      {git_username}")
-    print(f"GIT_PAT:           {_mask_pat(git_pat)}")
     print("-" * 70)
 
 
@@ -243,21 +206,12 @@ def _print_loaded_env(env_path: Path) -> None:
 # Dynamic repo/infra detection
 # ---------------------------------------------------------------------
 def _find_devops_repo_root_from_script_location(script_dir: Path) -> Path:
-    """
-    Walk up from driver.py location until we find a folder containing .git.
-    """
     cur = script_dir.resolve()
     for _ in range(20):
-        if (cur / ".git").exists():
-            return cur
-        if cur.parent == cur:
-            break
+        if (cur / ".git").exists(): return cur
+        if cur.parent == cur: break
         cur = cur.parent
-
-    raise RuntimeError(
-        "Could not locate DevOps repo root (.git) by walking up from driver.py.\n"
-        "Place driver.py inside the CloudRift-devops repository (any subfolder)."
-    )
+    raise RuntimeError("Could not locate DevOps repo root (.git).")
 
 
 def _path_distance(a: Path, b: Path) -> int:
@@ -283,10 +237,8 @@ def _find_infra_dir(devops_repo_root: Path) -> tuple[Path, Path, Path]:
     setup_candidates = [p for p in setup_candidates if valid(p)]
     destroy_candidates = [p for p in destroy_candidates if valid(p)]
 
-    if not setup_candidates:
-        raise FileNotFoundError(f"Could not find {SETUP_SH} under {devops_repo_root}")
-    if not destroy_candidates:
-        raise FileNotFoundError(f"Could not find {DESTROY_SH} under {devops_repo_root}")
+    if not setup_candidates: raise FileNotFoundError(f"Could not find {SETUP_SH}")
+    if not destroy_candidates: raise FileNotFoundError(f"Could not find {DESTROY_SH}")
 
     setup_dirs = {p.parent.resolve(): p.resolve() for p in setup_candidates}
     destroy_dirs = {p.parent.resolve(): p.resolve() for p in destroy_candidates}
@@ -296,7 +248,6 @@ def _find_infra_dir(devops_repo_root: Path) -> tuple[Path, Path, Path]:
         infra = sorted(common, key=lambda x: len(str(x)))[0]
         return infra, setup_dirs[infra], destroy_dirs[infra]
 
-    # fallback
     setup_sh = sorted(setup_candidates, key=lambda x: len(str(x)))[0].resolve()
     infra = setup_sh.parent.resolve()
     destroy_sh = min(destroy_candidates, key=lambda x: _path_distance(infra, x.parent.resolve())).resolve()
@@ -318,12 +269,8 @@ def _build_repo_paths(devops_repo_root: Path) -> RepoPaths:
 def _print_detected_paths(p: RepoPaths) -> None:
     print("\nDetected paths")
     print("-" * 70)
-    print(f"DevOps repo root:         {p.devops_repo_root}")
     print(f"Infra directory:          {p.infra_dir}")
     print(f"setup.sh:                 {p.setup_sh}")
-    print(f"destroy.sh:               {p.destroy_sh}")
-    print(f"DEV credentials.auto:     {p.dev_credentials_tfvars}")
-    print(f"DEV terraform.tfvars:     {p.dev_terraform_tfvars}")
     print("-" * 70)
 
 
@@ -331,30 +278,19 @@ def _print_detected_paths(p: RepoPaths) -> None:
 # tfvars writing
 # ---------------------------------------------------------------------
 def _credentials_tfvars_content() -> str:
-    # We write ALL dynamic/sensitive variables here.
-    # Since this is an .auto.tfvars file, it overrides everything else.
     lines = [
-        # AWS Credentials
         f'aws_access_key = "{aws_access_token}"',
         f'aws_secret_key = "{aws_secret_token}"',
         f'region = "{aws_region}"',
-
-        # --- FIX: Add Account ID and Owner here ---
         f'account_id = "{account_id}"',
         f'owner = "{owner}"',
-        # ------------------------------------------
-
-        # Git/Repo Variables
         f'devops_repo_url = "{devops_repo_url}"',
         f'backend_repo_url = "{backend_repo_url}"',
         f'frontend_repo_url = "{frontend_repo_url}"',
         f'git_username = "{git_username}"',
         f'git_pat = "{git_pat}"',
     ]
-
-    if aws_session_token:
-        lines.append(f'aws_session_token = "{aws_session_token}"')
-
+    if aws_session_token: lines.append(f'aws_session_token = "{aws_session_token}"')
     return "\n".join(lines) + "\n"
 
 
@@ -364,131 +300,113 @@ def _write_credentials(p: RepoPaths) -> None:
     print(f"Wrote: {p.dev_credentials_tfvars}")
 
 
-def _upsert_tfvars_kv(tfvars_path: Path, key: str, value: str) -> None:
-    tfvars_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = tfvars_path.read_text(encoding="utf-8", errors="replace") if tfvars_path.exists() else ""
-
-    text = existing.replace("\r\n", "\n").replace("\r", "\n")
-    if text and not text.endswith("\n"):
-        text += "\n"
-
-    pattern = re.compile(rf'(?m)^\s*{re.escape(key)}\s*=\s*(".*?"|[^\n#]+)\s*(#.*)?$')
-    new_line = f'{key} = "{value}"\n'
-
-    if pattern.search(text):
-        text = pattern.sub(new_line.rstrip("\n"), text)
-        if not text.endswith("\n"):
-            text += "\n"
-    else:
-        text += new_line
-
-    tfvars_path.write_text(text, encoding="utf-8", newline="\n")
-
-
-
-
 # ---------------------------------------------------------------------
 # Git Bash execution
 # ---------------------------------------------------------------------
 def _resolve_bash_path() -> Path:
     candidate = Path(DEFAULT_GIT_BASH)
-    if candidate.exists():
-        return candidate
-
+    if candidate.exists(): return candidate
     which = shutil.which("bash")
-    if which:
-        return Path(which)
-
-    raise FileNotFoundError(f"Git Bash not found at {DEFAULT_GIT_BASH} and 'bash' not found in PATH.")
+    if which: return Path(which)
+    raise FileNotFoundError(f"Git Bash not found at {DEFAULT_GIT_BASH}")
 
 
 def _clean_env_for_subprocess() -> dict[str, str]:
     env = dict(os.environ)
-
-    # Ensure terraform uses the tfvars we write, not the user's env/profile
-    for k in (
-        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
-        "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
-    ):
+    for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
         env.pop(k, None)
-
     env["TF_IN_AUTOMATION"] = "1"
-
-    # This is the key part: Terraform gets the required module variables from your LOCAL .env
+    # Pass vars for TF
     env["TF_VAR_devops_repo_url"] = devops_repo_url
     env["TF_VAR_backend_repo_url"] = backend_repo_url
     env["TF_VAR_frontend_repo_url"] = frontend_repo_url
-
-    # Only include these if your Terraform module actually declares these variables.
-    # (Your dev main.tf shows git_username/git_pat are being passed, so you DO want these.)
     env["TF_VAR_git_username"] = git_username
     env["TF_VAR_git_pat"] = git_pat
-
+    # Pass vars for AWS CLI
+    env["AWS_ACCESS_KEY_ID"] = aws_access_token
+    env["AWS_SECRET_ACCESS_KEY"] = aws_secret_token
+    if aws_session_token: env["AWS_SESSION_TOKEN"] = aws_session_token
+    env["AWS_DEFAULT_REGION"] = aws_region
     return env
 
 
-def _run_bash_script(
-    bash_path: Path,
-    script_name: str,
-    cwd: Path,
-    auto_confirm: bool,
-    extra_env: dict[str, str] | None = None,
-) -> None:
-    """
-    - Normalizes CRLF to LF
-    - Runs script
-    - If auto_confirm=True, feeds "yes" to satisfy terraform prompts
-    """
+def _run_bash_script(bash_path: Path, script_name: str, cwd: Path, auto_confirm: bool,
+                     extra_env: dict[str, str] | None = None) -> None:
     script_path = cwd / script_name
-    if not script_path.exists():
-        raise FileNotFoundError(f"Script not found: {script_path}")
+    if not script_path.exists(): raise FileNotFoundError(f"Script not found: {script_path}")
 
-    cmd = [
-        str(bash_path),
-        "-lc",
-        f"sed -i 's/\\r$//' {script_name}; bash {script_name}",
-    ]
-
+    cmd = [str(bash_path), "-lc", f"sed -i 's/\\r$//' {script_name}; bash {script_name}"]
     stdin_payload = ("yes\n" * 200) if auto_confirm else None
 
     print(f"\nExecuting in: {cwd}")
-    print(f'Command: {bash_path} -lc "sed -i \'s/\\r$//\' {script_name}; bash {script_name}"')
-
     env = _clean_env_for_subprocess()
-    if extra_env:
-        env.update(extra_env)
+    if extra_env: env.update(extra_env)
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(cwd),
-        text=True,
-        env=env,
-        input=stdin_payload,
-    )
+    result = subprocess.run(cmd, cwd=str(cwd), text=True, env=env, input=stdin_payload)
     if result.returncode != 0:
         raise RuntimeError(f"{script_name} failed with exit code {result.returncode}")
-
-
 
 
 # ---------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------
 def _preflight_aws_identity(bash_path: Path, cwd: Path) -> None:
+    cmd = [str(bash_path), "-lc", "aws sts get-caller-identity || echo 'AWS CLI check failed'"]
+    env = _clean_env_for_subprocess()
+    subprocess.run(cmd, cwd=str(cwd), text=True, env=env, check=False)
+
+
+# ---------------------------------------------------------------------
+# NEW: Fetch IP and Print Summary
+# ---------------------------------------------------------------------
+def _print_connection_info() -> None:
+    """
+    Uses AWS CLI to find the running instance belonging to the owner
+    and prints the connection strings with the local PEM path.
+    """
+    print("\n[Summary] Fetching instance details from AWS...")
+
+    # We filter by Owner tag to find YOUR specific instance
     cmd = [
-        str(bash_path),
-        "-lc",
-        "command -v aws >/dev/null 2>&1 && aws sts get-caller-identity || echo 'AWS CLI not found; skipping sts check.'"
+        "aws", "ec2", "describe-instances",
+        "--filters", f"Name=tag:Owner,Values={owner}", "Name=instance-state-name,Values=running",
+        "--query", "Reservations[0].Instances[0].PublicIpAddress",
+        "--output", "text"
     ]
 
     env = _clean_env_for_subprocess()
-    env["AWS_ACCESS_KEY_ID"] = aws_access_token
-    env["AWS_SECRET_ACCESS_KEY"] = aws_secret_token
-    if aws_session_token:
-        env["AWS_SESSION_TOKEN"] = aws_session_token
-    env["AWS_DEFAULT_REGION"] = aws_region
 
-    subprocess.run(cmd, cwd=str(cwd), text=True, env=env, check=False)
+    try:
+        # Check if aws cli is available in python path context
+        if not shutil.which("aws"):
+            print("⚠ 'aws' command not found on PATH. Cannot fetch IP automatically.")
+            return
+
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+        if result.returncode != 0 or not result.stdout.strip():
+            print("⚠ Could not fetch IP address. (Is the instance running?)")
+            return
+
+        ip = result.stdout.strip()
+        if ip == "None":
+            print("⚠ Instance found but has no public IP.")
+            return
+
+        print("\n" + "=" * 70)
+        print("                 DEPLOYMENT COMPLETE")
+        print("=" * 70)
+        print(f"\nFrontend URL:     http://{ip}/")
+        print(f"Jenkins URL:      http://{ip}:8080/")
+        print(f"API URL:          http://{ip}/api/")
+        print("-" * 70)
+        print("SSH Connection Command:")
+        # We use single quotes for the path to handle backslashes safely in the print output
+        print(f'ssh -i "{STACK_KEY_PATH}" ubuntu@{ip}')
+        print("-" * 70 + "\n")
+
+    except Exception as e:
+        print(f"⚠ Error fetching connection info: {e}")
 
 
 # ---------------------------------------------------------------------
@@ -498,20 +416,15 @@ def _provision(p: RepoPaths, bash_path: Path) -> None:
     print("\n[Provision] Writing tfvars and running setup.sh...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
-
-    enable_autostart = _prompt_yes_no(
-        "Enable auto-start service (systemd) on the instance?",
-        default_yes=False
-    )
-    extra_env = {"ENABLE_AUTOSTART": "1" if enable_autostart else "0"}
-
+    print("Auto-start service (systemd) is ENABLED by default.")
+    extra_env = {"ENABLE_AUTOSTART": "1"}
     _run_bash_script(bash_path, SETUP_SH, p.infra_dir, auto_confirm=False, extra_env=extra_env)
+    _print_connection_info()
     print("[Provision] Completed successfully.")
 
 
-
 def _destroy(p: RepoPaths, bash_path: Path) -> None:
-    print("\n[Destroy] Writing tfvars and running destroy.sh (auto-confirm enabled)...")
+    print("\n[Destroy] Writing tfvars and running destroy.sh...")
     _preflight_aws_identity(bash_path, p.infra_dir)
     _write_credentials(p)
     enable_autostart = os.environ.get("ENABLE_AUTOSTART", "0").strip()
@@ -520,14 +433,11 @@ def _destroy(p: RepoPaths, bash_path: Path) -> None:
     print("[Destroy] Completed successfully.")
 
 
-
 # ---------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------
 def main() -> int:
-    # Header before load (shows placeholders)
     _print_header()
-
     script_dir = Path(__file__).resolve().parent
     env_path = script_dir / ENV_FILE_NAME
 
@@ -557,7 +467,7 @@ def main() -> int:
     while True:
         print("\nMenu")
         print("1) Provision / Apply infrastructure (setup.sh)")
-        print("2) Destroy infrastructure (destroy.sh)  [deletes everything in Terraform state]")
+        print("2) Destroy infrastructure (destroy.sh)")
         print("0) Exit")
 
         choice = input("> ").strip()
@@ -571,7 +481,7 @@ def main() -> int:
                 print("Exiting.")
                 return 0
             else:
-                print("Invalid selection. Choose 0, 1, or 2.")
+                print("Invalid selection.")
         except Exception as e:
             print(f"\nERROR: {e}")
             if not _prompt_yes_no("Return to menu?", default_yes=True):

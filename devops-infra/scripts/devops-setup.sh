@@ -644,6 +644,15 @@ kubectl rollout status deployment/graph-deployment    --timeout=300s 2>/dev/null
 # -----------------------------
 print_header "Step 8: Configuring Auto-Start Service"
 
+# -----------------------------
+# FIX: Kill Conflicting Port 80 Services (Fixes 502 Bad Gateway)
+# -----------------------------
+if [ "$EC2_ENV" = true ]; then
+    log "Stopping Host Nginx to free up Port 80..."
+    sudo systemctl stop nginx >/dev/null 2>&1 || true
+    sudo systemctl disable nginx >/dev/null 2>&1 || true
+fi
+
 # Kill any existing port-forwards to prevent conflicts
 pkill -f 'kubectl port-forward' >/dev/null 2>&1 || true
 sleep 2
@@ -807,26 +816,26 @@ echo ""
 echo "=== Nodes ==="
 kubectl get nodes || true
 
+# -----------------------------
+# Final Output & Access Info
+# -----------------------------
 print_header "Access Information"
 
 if [ "$EC2_ENV" = true ]; then
   EC2_PUBLIC_IP="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo "unknown")"
 
-  echo -e "${GREEN}Application is accessible at:${NC}"
-  echo -e "  - Frontend: ${YELLOW}http://${EC2_PUBLIC_IP}/${NC}"
-  echo -e "  - API:      ${YELLOW}http://${EC2_PUBLIC_IP}/api/${NC}"
-
-  if [ "$DEPLOY_MONITORING" = "true" ]; then
-    echo ""
-    echo -e "${BLUE}Monitoring (Port Forward Required):${NC}"
-    echo "  - Prometheus: kubectl port-forward -n monitoring svc/prometheus-operated 9090:9090"
-    echo "  - Grafana:    kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80"
-  fi
-
+  echo -e "${GREEN}Deployment Complete!${NC}"
   echo ""
-  echo -e "${BLUE}Service Management:${NC}"
-  echo "  - Proxy Status:   sudo systemctl status k8s-proxy"
-  echo "  - Cluster Setup:  sudo systemctl status cloudrift-setup"
+  echo -e "EC2: IP : ${YELLOW}http://${EC2_PUBLIC_IP}${NC}"
+  echo -e "SSH connection: \"ssh -i <path_to_pem> ubuntu@${EC2_PUBLIC_IP}\""
+  echo ""
+  echo -e "${BLUE}Other Services:${NC}"
+  echo -e "  - Jenkins:  http://${EC2_PUBLIC_IP}:8080/"
+  echo -e "  - API:      http://${EC2_PUBLIC_IP}/api/"
+  echo ""
+  echo -e "${BLUE}Debugging:${NC}"
+  echo "  - Proxy Status: sudo systemctl status k8s-proxy"
+  echo "  - Cluster Setup: sudo systemctl status cloudrift-setup"
 else
   MINIKUBE_IP="$(minikube ip 2>/dev/null || echo "localhost")"
 

@@ -402,7 +402,7 @@ def _print_connection_info() -> None:
         print("-" * 70)
         print("SSH Connection Command:")
         # We use single quotes for the path to handle backslashes safely in the print output
-        print(f'ssh -i "{STACK_KEY_PATH}" ubuntu@{ip}')
+        print(f'ssh -i {STACK_KEY_PATH} ubuntu@{ip}')
         print("-" * 70 + "\n")
 
     except Exception as e:

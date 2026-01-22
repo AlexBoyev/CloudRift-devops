@@ -202,14 +202,18 @@ if [ "$EC2_ENV" = true ]; then
     print_status "Minikube is already running"
   else
     print_status "Starting Minikube..."
-    # FIX: Explicit memory setting to 5120mb for 8GB EC2 Stability
     sudo -u "$EC2_USER" minikube start --driver=docker --memory=5120mb --cpus=2
     print_status "Minikube started successfully"
 
-    # FIX: Enable Ingress Addon immediately after start
+    # Enable Ingress Addon immediately after start
     print_status "Enabling Ingress Controller..."
     sudo -u "$EC2_USER" minikube addons enable ingress
-    kubectl wait --for=condition=Available deployment/ingress-nginx-controller -n ingress-nginx --timeout=120s
+
+    # Wait for the addon controller to be ready (correct selector)
+    kubectl wait --namespace ingress-nginx \
+      --for=condition=ready pod \
+      --selector=app.kubernetes.io/component=controller \
+      --timeout=120s
     print_status "Ingress Controller enabled"
   fi
 
@@ -545,15 +549,17 @@ kubectl rollout status deployment/backend-deployment --timeout=120s
 print_status "Backend is ready"
 
 # 5. Deploy Frontend and Ingress
-log "Deploying Frontend and Ingress..."
+log "Deploying Frontend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
+print_status "Frontend deployed"
+log "Deploying Ingress rules..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
-print_status "Deployment Complete"
+print_status "Ingress rules applied"
 
+# CRITICAL FIX: Skip custom ingress controller deployment
+# The Minikube addon already provides the controller
 if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
-  echo "Deploying NGINX ingress controller..."
-  kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress-controller/"
-  print_status "NGINX ingress controller deployed"
+  log "Skipping custom ingress-controller (using Minikube addon instead)"
 fi
 
 # FIX: Monitoring Logic with Helm Fallback

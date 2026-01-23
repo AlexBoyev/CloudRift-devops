@@ -62,7 +62,7 @@ resource "aws_launch_template" "this" {
   network_interfaces {
     subnet_id                   = var.subnet_id
     security_groups             = [var.security_group_id]
-    associate_public_ip_address = true
+    associate_public_ip_address = true  # KEEP THIS - ensures dynamic public IP
   }
 
   block_device_mappings {
@@ -127,12 +127,19 @@ resource "aws_instance" "this" {
 ########################################
 resource "null_resource" "bootstrap" {
   depends_on = [aws_instance.this]
+
+  # Trigger re-provisioning if instance is recreated
+  triggers = {
+    instance_id = aws_instance.this.id
+  }
+
   connection {
     type = "ssh"
-    # FIX 2: Connect using the Elastic IP, not the instance's old dynamic IP
-    host        = aws_eip.this.public_ip
+    # FIXED: Use dynamic public IP instead of Elastic IP
+    host        = aws_instance.this.public_ip
     user        = var.ssh_user
     private_key = tls_private_key.stack_key.private_key_pem
+    timeout     = "5m"
   }
 
   # Copy .env file
@@ -149,9 +156,11 @@ resource "null_resource" "bootstrap" {
 
   provisioner "remote-exec" {
     inline = [
+      "echo 'Waiting for cloud-init to complete...'",
+      "cloud-init status --wait || true",
       "sleep 30",
 
-      # FIX: Remove Windows line endings from bootstrap.sh before running it
+      # Remove Windows line endings from bootstrap.sh
       "sed -i 's/\r$//' /home/${var.ssh_user}/bootstrap.sh",
 
       "chmod +x /home/${var.ssh_user}/bootstrap.sh",
@@ -170,7 +179,7 @@ resource "null_resource" "bootstrap" {
 
       "if [ -d \"/home/${var.ssh_user}/new-devops-local\" ]; then cd /home/${var.ssh_user}/new-devops-local; else echo 'Directory not found' && exit 1; fi",
 
-      # FIX: Sanitize the next script too, just in case
+      # Sanitize the devops setup script
       "if [ -f devops-infra/scripts/devops-setup.sh ]; then sed -i 's/\r$//' devops-infra/scripts/devops-setup.sh; fi",
 
       "chmod +x devops-infra/scripts/devops-setup.sh",
@@ -179,10 +188,4 @@ resource "null_resource" "bootstrap" {
       "sudo -E devops-infra/scripts/devops-setup.sh dev true false false"
     ]
   }
-}
-
-resource "aws_eip" "this" {
-  instance = aws_instance.this.id
-  vpc      = true
-  tags     = var.tags
 }

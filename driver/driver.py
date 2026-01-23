@@ -31,6 +31,7 @@ aws_secret_token: str = ""  # AWS Secret Access Key
 aws_session_token: str = ""  # Optional
 account_id: str = ""
 owner: str = ""  # Must match IAM username
+ec2_dns: str = ""  # NEW: Custom DNS name for EC2
 
 # -----------------------------
 # Constants
@@ -66,6 +67,7 @@ def _print_header() -> None:
     print(f"DEVOPS repo URL:   {devops_repo_url or '<not loaded yet>'}")
     print(f"BACKEND repo URL:  {backend_repo_url or '<not loaded yet>'}")
     print(f"FRONTEND repo URL: {frontend_repo_url or '<not loaded yet>'}")
+    print(f"EC2 DNS Name:      {ec2_dns or '<not set>'}")
     print("-" * 70)
 
 
@@ -156,7 +158,7 @@ def _load_env_file(env_path: Path) -> dict[str, str]:
 
 def _apply_env(data: dict[str, str]) -> None:
     global aws_region, aws_access_token, aws_secret_token, aws_session_token
-    global account_id, owner
+    global account_id, owner, ec2_dns
     global devops_repo_url, backend_repo_url, frontend_repo_url
     global git_username, git_pat
 
@@ -171,6 +173,7 @@ def _apply_env(data: dict[str, str]) -> None:
     aws_session_token = pick("AWS_SESSION_TOKEN", "aws_session_token")
     account_id = pick("ACCOUNT_ID", "account_id")
     owner = pick("OWNER", "owner")
+    ec2_dns = pick("ec2_dns")
 
     devops_repo_url = pick("DEVOPS_REPO_URL", "devops_repo_url")
     backend_repo_url = pick("BACKEND_REPO_URL", "backend_repo_url", "API_REPO_URL", "api_repo_url")
@@ -199,6 +202,7 @@ def _print_loaded_env(env_path: Path) -> None:
     print(f"AWS_REGION:        {aws_region}")
     print(f"ACCOUNT_ID:        {account_id}")
     print(f"OWNER:             {owner}")
+    print(f"EC2_DNS:           {ec2_dns or '<not set - will use AWS default>'}")
     print("-" * 70)
 
 
@@ -291,6 +295,7 @@ def _credentials_tfvars_content() -> str:
         f'git_pat = "{git_pat}"',
     ]
     if aws_session_token: lines.append(f'aws_session_token = "{aws_session_token}"')
+    if ec2_dns: lines.append(f'ec2_dns = "{ec2_dns}"')
     return "\n".join(lines) + "\n"
 
 
@@ -322,6 +327,8 @@ def _clean_env_for_subprocess() -> dict[str, str]:
     env["TF_VAR_frontend_repo_url"] = frontend_repo_url
     env["TF_VAR_git_username"] = git_username
     env["TF_VAR_git_pat"] = git_pat
+    if ec2_dns:
+        env["TF_VAR_ec2_dns"] = ec2_dns
     # Pass vars for AWS CLI
     env["AWS_ACCESS_KEY_ID"] = aws_access_token
     env["AWS_SECRET_ACCESS_KEY"] = aws_secret_token
@@ -357,56 +364,173 @@ def _preflight_aws_identity(bash_path: Path, cwd: Path) -> None:
 
 
 # ---------------------------------------------------------------------
-# NEW: Fetch IP and Print Summary
+# EC2 Management Functions
 # ---------------------------------------------------------------------
-def _print_connection_info() -> None:
-    """
-    Uses AWS CLI to find the running instance belonging to the owner
-    and prints the connection strings with the local PEM path.
-    """
-    print("\n[Summary] Fetching instance details from AWS...")
-
-    # We filter by Owner tag to find YOUR specific instance
+def _get_instance_id() -> str | None:
+    """Get the instance ID for the current owner's EC2 instance."""
     cmd = [
         "aws", "ec2", "describe-instances",
-        "--filters", f"Name=tag:Owner,Values={owner}", "Name=instance-state-name,Values=running",
-        "--query", "Reservations[0].Instances[0].PublicIpAddress",
+        "--filters", f"Name=tag:Owner,Values={owner}",
+        "--query", "Reservations[0].Instances[0].InstanceId",
         "--output", "text"
     ]
 
     env = _clean_env_for_subprocess()
 
     try:
-        # Check if aws cli is available in python path context
         if not shutil.which("aws"):
-            print("⚠ 'aws' command not found on PATH. Cannot fetch IP automatically.")
-            return
+            print("⚠ 'aws' command not found on PATH.")
+            return None
 
         result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
         if result.returncode != 0 or not result.stdout.strip():
-            print("⚠ Could not fetch IP address. (Is the instance running?)")
-            return
+            return None
 
-        ip = result.stdout.strip()
-        if ip == "None":
-            print("⚠ Instance found but has no public IP.")
-            return
+        instance_id = result.stdout.strip()
+        if instance_id == "None":
+            return None
 
-        print("\n" + "=" * 70)
-        print("                 DEPLOYMENT COMPLETE")
-        print("=" * 70)
-        print(f"\nFrontend URL:     http://{ip}/")
-        print(f"Jenkins URL:      http://{ip}:8080/")
-        print(f"API URL:          http://{ip}/api/")
-        print("-" * 70)
-        print("SSH Connection Command:")
-        # We use single quotes for the path to handle backslashes safely in the print output
-        print(f'ssh -i {STACK_KEY_PATH} ubuntu@{ip}')
-        print("-" * 70 + "\n")
+        return instance_id
+    except Exception:
+        return None
+
+
+def _get_connection_info() -> tuple[str | None, str | None]:
+    """
+    Fetch EC2 instance IP and DNS.
+    Returns: (public_ip, public_dns)
+    """
+    cmd_ip = [
+        "aws", "ec2", "describe-instances",
+        "--filters", f"Name=tag:Owner,Values={owner}", "Name=instance-state-name,Values=running",
+        "--query", "Reservations[0].Instances[0].PublicIpAddress",
+        "--output", "text"
+    ]
+
+    cmd_dns = [
+        "aws", "ec2", "describe-instances",
+        "--filters", f"Name=tag:Owner,Values={owner}", "Name=instance-state-name,Values=running",
+        "--query", "Reservations[0].Instances[0].PublicDnsName",
+        "--output", "text"
+    ]
+
+    env = _clean_env_for_subprocess()
+
+    try:
+        if not shutil.which("aws"):
+            print("⚠ 'aws' command not found on PATH. Cannot fetch connection info.")
+            return None, None
+
+        ip_result = subprocess.run(cmd_ip, capture_output=True, text=True, env=env)
+        dns_result = subprocess.run(cmd_dns, capture_output=True, text=True, env=env)
+
+        ip = ip_result.stdout.strip() if ip_result.returncode == 0 else None
+        dns = dns_result.stdout.strip() if dns_result.returncode == 0 else None
+
+        if ip == "None": ip = None
+        if dns == "None": dns = None
+
+        return ip, dns
 
     except Exception as e:
         print(f"⚠ Error fetching connection info: {e}")
+        return None, None
+
+
+def _print_connection_info() -> None:
+    """Print connection information after deployment."""
+    print("\n[Summary] Fetching instance details from AWS...")
+
+    ip, dns = _get_connection_info()
+
+    if not ip and not dns:
+        print("⚠ Could not fetch IP/DNS. Is the instance running?")
+        return
+
+    print("\n" + "=" * 70)
+    print("                 DEPLOYMENT COMPLETE")
+    print("=" * 70)
+
+    if ip:
+        print(f"\nPublic IP:        {ip}")
+    if dns:
+        print(f"Public DNS:       {dns}")
+
+    print("-" * 70)
+
+    # Use DNS if available, otherwise IP
+    endpoint = dns if dns else ip
+    if endpoint:
+        print(f"Frontend URL:     http://{endpoint}/")
+        print(f"Jenkins URL:      http://{endpoint}:8080/")
+        print(f"API URL:          http://{endpoint}/api/")
+        print("-" * 70)
+        print("SSH Connection Command:")
+        print(f'ssh -i {STACK_KEY_PATH} ubuntu@{endpoint}')
+        print("-" * 70 + "\n")
+
+
+def _restart_ec2() -> None:
+    """Restart the EC2 instance."""
+    instance_id = _get_instance_id()
+
+    if not instance_id:
+        print("⚠ No instance found for owner: " + owner)
+        return
+
+    print(f"\nRestarting EC2 instance: {instance_id}")
+
+    if not _prompt_yes_no("Are you sure you want to restart the instance?", default_yes=False):
+        print("Restart cancelled.")
+        return
+
+    cmd = ["aws", "ec2", "reboot-instances", "--instance-ids", instance_id]
+    env = _clean_env_for_subprocess()
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+        if result.returncode == 0:
+            print(f"✓ Instance {instance_id} restart initiated successfully")
+            print("Note: It may take 1-2 minutes for the instance to restart")
+            print("      and services to come back online.")
+        else:
+            print(f"✗ Failed to restart instance: {result.stderr}")
+    except Exception as e:
+        print(f"✗ Error restarting instance: {e}")
+
+
+def _show_connection_info() -> None:
+    """Display current EC2 connection information."""
+    print("\n[Fetching EC2 Connection Info...]")
+
+    ip, dns = _get_connection_info()
+
+    if not ip and not dns:
+        print("⚠ No running instance found for owner: " + owner)
+        return
+
+    print("\n" + "=" * 70)
+    print("                 EC2 CONNECTION INFO")
+    print("=" * 70)
+
+    if ip:
+        print(f"\nPublic IP:        {ip}")
+    if dns:
+        print(f"Public DNS:       {dns}")
+
+    print("-" * 70)
+
+    endpoint = dns if dns else ip
+    if endpoint:
+        print(f"Frontend URL:     http://{endpoint}/")
+        print(f"Jenkins URL:      http://{endpoint}:8080/")
+        print(f"API URL:          http://{endpoint}/api/")
+        print("-" * 70)
+        print("SSH Connection Command:")
+        print(f'ssh -i {STACK_KEY_PATH} ubuntu@{endpoint}')
+        print("-" * 70 + "\n")
 
 
 # ---------------------------------------------------------------------
@@ -466,8 +590,10 @@ def main() -> int:
 
     while True:
         print("\nMenu")
-        print("1) Provision / Apply infrastructure (setup.sh)")
-        print("2) Destroy infrastructure (destroy.sh)")
+        print("1) Create / Provision infrastructure (setup.sh)")
+        print("2) Restart EC2 instance")
+        print("3) Get DNS and IP information")
+        print("4) Destroy infrastructure (destroy.sh)")
         print("0) Exit")
 
         choice = input("> ").strip()
@@ -476,6 +602,10 @@ def main() -> int:
             if choice == "1":
                 _provision(paths, bash_path)
             elif choice == "2":
+                _restart_ec2()
+            elif choice == "3":
+                _show_connection_info()
+            elif choice == "4":
                 _destroy(paths, bash_path)
             elif choice == "0":
                 print("Exiting.")

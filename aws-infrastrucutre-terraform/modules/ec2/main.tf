@@ -62,7 +62,7 @@ resource "aws_launch_template" "this" {
   network_interfaces {
     subnet_id                   = var.subnet_id
     security_groups             = [var.security_group_id]
-    associate_public_ip_address = true  # KEEP THIS - ensures dynamic public IP
+    associate_public_ip_address = true # KEEP THIS - ensures dynamic public IP
   }
 
   block_device_mappings {

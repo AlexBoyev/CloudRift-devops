@@ -500,6 +500,65 @@ def _restart_ec2() -> None:
     except Exception as e:
         print(f"✗ Error restarting instance: {e}")
 
+def _stop_start_ec2() -> None:
+    """
+    Stop and then start the EC2 instance.
+
+    WARNING:
+    - If you are NOT using an Elastic IP, AWS typically assigns a NEW public IPv4 on start.
+    - Public DNS will change with the new public IP.
+    """
+    instance_id = _get_instance_id()
+    if not instance_id:
+        print("⚠ No instance found for owner: " + owner)
+        return
+
+    print("\n" + "=" * 70)
+    print("                 STOP + START EC2")
+    print("=" * 70)
+    print("WARNING: This will likely assign a NEW public IP when the instance starts.")
+    print("         If you rely on the old IP/DNS, it will break.")
+    print("-" * 70)
+
+    if not _prompt_yes_no("Are you sure you want to STOP and START the instance?", default_yes=False):
+        print("Stop/Start cancelled.")
+        return
+
+    env = _clean_env_for_subprocess()
+
+    # Stop
+    print(f"\nStopping EC2 instance: {instance_id}")
+    stop_cmd = ["aws", "ec2", "stop-instances", "--instance-ids", instance_id]
+    stop_res = subprocess.run(stop_cmd, capture_output=True, text=True, env=env)
+    if stop_res.returncode != 0:
+        print(f"✗ Failed to stop instance: {stop_res.stderr}")
+        return
+
+    print("✓ Stop initiated. Waiting until instance is stopped...")
+    wait_stop_cmd = ["aws", "ec2", "wait", "instance-stopped", "--instance-ids", instance_id]
+    wait_stop_res = subprocess.run(wait_stop_cmd, capture_output=True, text=True, env=env)
+    if wait_stop_res.returncode != 0:
+        print(f"✗ Error while waiting for stop: {wait_stop_res.stderr}")
+        return
+
+    # Start
+    print(f"\nStarting EC2 instance: {instance_id}")
+    start_cmd = ["aws", "ec2", "start-instances", "--instance-ids", instance_id]
+    start_res = subprocess.run(start_cmd, capture_output=True, text=True, env=env)
+    if start_res.returncode != 0:
+        print(f"✗ Failed to start instance: {start_res.stderr}")
+        return
+
+    print("✓ Start initiated. Waiting until instance is running...")
+    wait_run_cmd = ["aws", "ec2", "wait", "instance-running", "--instance-ids", instance_id]
+    wait_run_res = subprocess.run(wait_run_cmd, capture_output=True, text=True, env=env)
+    if wait_run_res.returncode != 0:
+        print(f"✗ Error while waiting for running: {wait_run_res.stderr}")
+        return
+
+    print("\n✓ Instance is running again.")
+    print("Reminder: Public IP/DNS may have changed. Fetching updated connection info...\n")
+    _show_connection_info()
 
 def _show_connection_info() -> None:
     """Display current EC2 connection information."""
@@ -591,9 +650,10 @@ def main() -> int:
     while True:
         print("\nMenu")
         print("1) Create / Provision infrastructure (setup.sh)")
-        print("2) Restart EC2 instance")
+        print("2) Restart EC2 instance (reboot)")
         print("3) Get DNS and IP information")
-        print("4) Destroy infrastructure (destroy.sh)")
+        print("4) Stop + Start EC2 instance (WARNING: new public IP likely)")
+        print("5) Destroy infrastructure (destroy.sh)")
         print("0) Exit")
 
         choice = input("> ").strip()
@@ -606,7 +666,10 @@ def main() -> int:
             elif choice == "3":
                 _show_connection_info()
             elif choice == "4":
+                _stop_start_ec2()
+            elif choice == "5":
                 _destroy(paths, bash_path)
+
             elif choice == "0":
                 print("Exiting.")
                 return 0

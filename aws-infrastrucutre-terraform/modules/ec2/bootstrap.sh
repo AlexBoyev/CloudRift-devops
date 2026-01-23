@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
-set -x # prints every command to Terraform logs for debugging
+
+# ------------------------------------------------------------
+# Logging / debug
+# ------------------------------------------------------------
+# Enable command tracing ONLY if explicitly requested, to avoid leaking tokens into Terraform logs.
+DEBUG_BOOTSTRAP="${DEBUG_BOOTSTRAP:-0}"
+if [ "${DEBUG_BOOTSTRAP}" = "1" ]; then
+  set -x
+fi
 
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
 log()  { printf "${GREEN}[BOOTSTRAP]${NC} %s\n" "$*"; }
@@ -22,6 +30,10 @@ START_MINIKUBE="${START_MINIKUBE:-1}"                 # 1=start minikube, 0=skip
 MINIKUBE_DRIVER="${MINIKUBE_DRIVER:-docker}"          # docker (matches your runs)
 MINIKUBE_PROFILE="${MINIKUBE_PROFILE:-minikube}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-minikube}"
+
+# IMPORTANT: minikube container resources (this is NOT the EC2 instance size)
+MINIKUBE_MEMORY_MB="${MINIKUBE_MEMORY_MB:-4096}"
+MINIKUBE_CPUS="${MINIKUBE_CPUS:-2}"
 
 ENABLE_HOST_NGINX="${ENABLE_HOST_NGINX:-1}"           # 1=host nginx :80->:32080
 ENABLE_INGRESS="${ENABLE_INGRESS:-1}"                 # 1=apply ingress controller + ingress rules
@@ -63,7 +75,7 @@ sudo apt-get update -y
 log "Installing base packages..."
 sudo apt-get install -y \
   ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common \
-  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk jq
+  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk jq nginx
 
 # -------------------------------------------------------------------
 # AWS CLI v2
@@ -151,15 +163,9 @@ sudo systemctl daemon-reload || true
 sudo systemctl enable jenkins >/dev/null 2>&1 || true
 sudo systemctl restart jenkins >/dev/null 2>&1 || true
 
-log "Checking Jenkins status and admin password..."
+log "Checking Jenkins status and URL..."
 for i in $(seq 1 12); do
   if sudo systemctl is-active --quiet jenkins; then
-    if [ -f /var/lib/jenkins/secrets/initialAdminPassword ]; then
-      ADMIN_PASS="$(sudo cat /var/lib/jenkins/secrets/initialAdminPassword 2>/dev/null || true)"
-      if [ -n "$ADMIN_PASS" ]; then
-        log "Jenkins admin password: $ADMIN_PASS"
-      fi
-    fi
     PUB_IP="$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 || true)"
     if [ -z "$PUB_IP" ]; then
       PUB_IP="$(curl -s https://checkip.amazonaws.com || true)"
@@ -196,10 +202,10 @@ if id -nG "${TARGET_USER}" | grep -q '\bdocker\b'; then
   :
 else
   sudo usermod -aG docker "${TARGET_USER}"
-  warn "Added ${TARGET_USER} to docker group."
+  warn "Added ${TARGET_USER} to docker group (effective on next login)."
 fi
 
-# Make docker.sock usable immediately (no re-login required)
+# Make docker.sock usable immediately
 sudo chown root:docker /var/run/docker.sock || true
 sudo chmod 660 /var/run/docker.sock || true
 
@@ -323,14 +329,14 @@ done
 # -------------------------------------------------------------------
 # Minikube + kubectl context fix (prevents localhost:8080 fallback)
 # -------------------------------------------------------------------
-log "Minikube bring-up: START_MINIKUBE=${START_MINIKUBE}, DRIVER=${MINIKUBE_DRIVER}, PROFILE=${MINIKUBE_PROFILE}"
+log "Minikube bring-up: START_MINIKUBE=${START_MINIKUBE}, DRIVER=${MINIKUBE_DRIVER}, PROFILE=${MINIKUBE_PROFILE}, MEM=${MINIKUBE_MEMORY_MB}MB, CPUS=${MINIKUBE_CPUS}"
 
 sudo -u "${TARGET_USER}" -H bash -lc "mkdir -p ~/.kube ~/.minikube"
 
 if [ "${START_MINIKUBE}" = "1" ]; then
   sudo -u "${TARGET_USER}" -H bash -lc "
     set -euo pipefail
-    minikube start --driver='${MINIKUBE_DRIVER}' --profile='${MINIKUBE_PROFILE}'
+    minikube start --driver='${MINIKUBE_DRIVER}' --profile='${MINIKUBE_PROFILE}' --memory='${MINIKUBE_MEMORY_MB}mb' --cpus='${MINIKUBE_CPUS}'
     kubectl config use-context '${KUBE_CONTEXT}'
     kubectl get nodes
   "
@@ -382,7 +388,6 @@ fi
 
 # -------------------------------------------------------------------
 # Optional: Deploy your microservices manifests
-# (Enable by setting ENABLE_APP_DEPLOY=1 and ensure the paths exist)
 # -------------------------------------------------------------------
 if [ "${START_MINIKUBE}" = "1" ] && [ "${ENABLE_APP_DEPLOY}" = "1" ]; then
   log "Deploying application manifests (ENABLE_APP_DEPLOY=1)"
@@ -410,8 +415,7 @@ fi
 # Jenkins remains on :8080
 # -------------------------------------------------------------------
 if [ "${ENABLE_HOST_NGINX}" = "1" ]; then
-  log "Installing/configuring host nginx to expose app on :80 -> 127.0.0.1:32080"
-  sudo apt-get install -y nginx
+  log "Configuring host nginx to expose app on :80 -> 127.0.0.1:32080"
 
   sudo tee /etc/nginx/sites-available/cloudrift >/dev/null <<'EOF'
 server {

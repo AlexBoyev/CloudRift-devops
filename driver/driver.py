@@ -11,7 +11,7 @@ from pathlib import Path
 # -----------------------------
 # USER CONFIG: Local Key Path
 # -----------------------------
-STACK_KEY_PATH = r"C:\Users\Alex\CloudRift-3-repos\CloudRift-devops\aws-infrastrucutre-terraform\modules\ec2\keys\stack_key.pem"
+STACK_KEY_PATH = r"C:\Users\Alex\CloudRift-3-repos\CloudRift-devops\aws-infrastrucutre-terraform\environments\dev\terraform-modules\modules\ec2\keys\stack_key.pem"
 
 # -----------------------------
 # Repo URLs + Git creds (loaded from .env)

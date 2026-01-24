@@ -1,92 +1,43 @@
-# Jenkins Plugins List - Zero-Touch Automation Setup
-# These plugins enable fully automated Jenkins configuration
-
-# Configuration as Code - CRITICAL for automation
-configuration-as-code:latest
-job-dsl:latest
-
-# Core Pipeline Plugins
-workflow-aggregator:latest
-workflow-basic-steps:latest
-workflow-cps:latest
-workflow-job:latest
-workflow-multibranch:latest
-workflow-scm-step:latest
-pipeline-stage-view:latest
-pipeline-graph-view:latest
-pipeline-rest-api:latest
-
-# Git Integration
+# Essential plugins for GitHub integration
 git:latest
 github:latest
-github-api:latest
 github-branch-source:latest
+pipeline-github:latest
 github-pullrequest:latest
-ssh-agent:latest
-scm-api:latest
+github-api:latest
 
-# Credentials Management
+# Configuration as Code
+configuration-as-code:latest
+
+# Pipeline and SCM
+workflow-aggregator:latest
+workflow-job:latest
+workflow-cps:latest
+pipeline-stage-view:latest
+
+# Credentials
 credentials:latest
 credentials-binding:latest
 ssh-credentials:latest
 plain-credentials:latest
 
-# Docker Integration
+# Docker integration
 docker-workflow:latest
-docker-plugin:latest
 docker-commons:latest
-docker-build-step:latest
 
-# Kubernetes Integration
-kubernetes:latest
-kubernetes-cli:latest
-kubernetes-credentials-provider:latest
-kubernetes-client-api:latest
+# Role-based security
+role-strategy:latest
 
-# Build Tools
-gradle:latest
-nodejs:latest
-ant:latest
-maven-plugin:latest
+# SSH and Authentication
+ssh-agent:latest
+ssh-slaves:latest
+publish-over-ssh:latest
 
-# Testing & Quality
-junit:latest
-cobertura:latest
-htmlpublisher:latest
-test-results-analyzer:latest
-performance:latest
-
-# Notifications
-slack:latest
-email-ext:latest
-mailer:latest
+# Locale and Internationalization
+locale:latest
 
 # Utilities
 timestamper:latest
-ansicolor:latest
-rebuild:latest
 build-timeout:latest
+ansicolor:latest
 ws-cleanup:latest
-green-balls:latest
-build-name-setter:latest
-envelope:latest
-
-# Security & Role Management
-role-strategy:latest
-matrix-auth:latest
-authorize-project:latest
-
-# Blue Ocean (Modern UI)
-blueocean:latest
-blueocean-pipeline-api-impl:latest
-blueocean-github-pipeline:latest
-blueocean-git-pipeline:latest
-
-# Additional Essential Plugins
-structs:latest
-script-security:latest
-command-launcher:latest
-jdk-tool:latest
-localization:latest
-theme-manager:latest
-dark-theme:latest

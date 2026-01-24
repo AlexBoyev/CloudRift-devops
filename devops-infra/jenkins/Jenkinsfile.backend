@@ -3,7 +3,6 @@ pipeline {
 
     options {
         timestamps()
-        ansiColor('xterm')
         timeout(time: 30, unit: 'MINUTES')
         disableConcurrentBuilds()
     }
@@ -20,8 +19,8 @@ pipeline {
     }
 
     environment {
-        // Jenkins credentials (configure in Jenkins -> Credentials)
-        // - github-pat-token : "Username with password" OR "Secret text" (we use password field below)
+        // Jenkins credentials IDs
+        // - github-pat-token : Username/Password (PAT in password field) OR Secret text (adjust if needed)
         // - ec2-ssh-key      : SSH private key credential
         GITHUB_PAT_CRED = 'github-pat-token'
         EC2_SSH_CRED    = 'ec2-ssh-key'
@@ -164,7 +163,6 @@ else
   git config --global --add safe.directory \\"$API_DIR\\" || true
   git remote set-url origin \\"$AUTH_URL\\" || true
   git fetch --all --prune
-
   git checkout \\"$BRANCH\\" || git checkout -b \\"$BRANCH\\" \\"origin/$BRANCH\\"
   git pull origin \\"$BRANCH\\" || {
     echo \\"Pull failed, resetting...\\"
@@ -264,11 +262,11 @@ cleanup_repo postgres-db
 
 docker image prune -f || true
 
-docker build -t \\"backend-service:${BACKEND_TAG}\\"   -f backend/Dockerfile    backend/
-docker build -t \\"stack-service:${BACKEND_TAG}\\"     -f stack/Dockerfile      ./
-docker build -t \\"linkedlist-service:${BACKEND_TAG}\\" -f linkedlist/Dockerfile ./
-docker build -t \\"graph-service:${BACKEND_TAG}\\"     -f graph/Dockerfile      ./
-docker build -t \\"postgres-db:${BACKEND_TAG}\\"       -f database/Dockerfile   ./
+docker build -t \\"backend-service:${BACKEND_TAG}\\"    -f backend/Dockerfile     backend/
+docker build -t \\"stack-service:${BACKEND_TAG}\\"      -f stack/Dockerfile       ./
+docker build -t \\"linkedlist-service:${BACKEND_TAG}\\" -f linkedlist/Dockerfile  ./
+docker build -t \\"graph-service:${BACKEND_TAG}\\"      -f graph/Dockerfile       ./
+docker build -t \\"postgres-db:${BACKEND_TAG}\\"        -f database/Dockerfile    ./
 
 echo \\"Images built:\\"
 docker images | grep -E '^(backend-service|stack-service|linkedlist-service|graph-service|postgres-db)[[:space:]]' || true
@@ -300,20 +298,15 @@ set -euo pipefail
 
 eval \\"$(minikube -p \\"${MINIKUBE_PROFILE}\\" docker-env)\\"
 
-# Example: apply manifests from devops repo; adjust paths to your actual k8s files.
 cd \\"$REPO_DIR\\"
+echo \\"Deploying tag ${BACKEND_TAG}...\\"
 
-echo \\"Deploying tag ${BACKEND_TAG}...\"
-
-# If you use kustomize/helm, replace accordingly.
-# Example expects manifests under: devops-infra/k8s/backend/
-# and uses sed to substitute tag (or use kustomize images).
 if [ -d devops-infra/k8s/backend ]; then
   find devops-infra/k8s/backend -type f -name '*.yaml' -print0 \\
     | xargs -0 -I{} bash -lc "sed \\"s|IMAGE_TAG|${BACKEND_TAG}|g\\" {}" \\
     | kubectl apply -f -
 else
-  echo \\"WARNING: devops-infra/k8s/backend not found. Skipping kubectl apply.\"
+  echo \\"WARNING: devops-infra/k8s/backend not found. Skipping kubectl apply.\\"
 fi
 
 kubectl get pods -A | head -n 50 || true
@@ -325,14 +318,8 @@ SCRIPT
     }
 
     post {
-        success {
-            echo "SUCCESS: backend pipeline (tag=${env.BACKEND_TAG})"
-        }
-        failure {
-            echo "FAILED: backend pipeline"
-        }
-        always {
-            echo "Build finished: ${currentBuild.currentResult}"
-        }
+        success { echo "SUCCESS: backend pipeline (tag=${env.BACKEND_TAG})" }
+        failure { echo "FAILED: backend pipeline" }
+        always  { echo "Build finished: ${currentBuild.currentResult}" }
     }
 }

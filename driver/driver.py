@@ -510,7 +510,10 @@ def _print_connection_info() -> None:
     endpoint = dns if dns else ip
     if endpoint:
         print(f"Frontend URL:     http://{endpoint}/")
-        print(f"Jenkins URL:      http://{endpoint}:8080/")
+        print("Jenkins access:")
+        print("  SSH tunnel required:")
+        print(f"  ssh -i {STACK_KEY_PATH} -L 8080:localhost:8080 ubuntu@{endpoint}")
+        print("  Then open: http://localhost:8080")
         print(f"API URL:          http://{endpoint}/api/")
         print("-" * 70)
         print("SSH Connection Command:")

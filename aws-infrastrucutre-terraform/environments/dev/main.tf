@@ -10,7 +10,7 @@ module "vpc" {
 
 module "sg" {
   source          = "../../modules/sg"
-  security_groups = var.security_groups
+  security_groups = local.security_groups
   vpc_id          = module.vpc.vpc_id
 }
 
@@ -33,7 +33,6 @@ module "ec2" {
   instance_name     = var.instance_name
   security_group_id = module.sg.stack_ec2_sg_id
 
-  # These work because we updated the module to accept them
   environment = var.environment
   project     = var.project
   owner       = var.owner

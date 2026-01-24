@@ -1,10 +1,8 @@
-
 environment = "dev"
 project     = "stack"
 ssh_user    = "ubuntu"
 
-//**********VPC-Module**********//
-
+# VPC
 vpc_cidr_block = "172.20.0.0/16"
 
 subnet_cidr_blocks = [
@@ -22,10 +20,7 @@ availability_zones = [
   "us-east-1c",
 ]
 
-
-//**********EC2-Module**********//
-
-
+# EC2
 ami           = "ami-0ecb62995f68bb549"
 instance_name = "stack-Host"
 
@@ -35,91 +30,3 @@ rsa              = 2048
 key_name         = "stack-key-dev"
 private_filename = "./terraform-modules/modules/ec2/keys/stack_key.pem"
 public_filename  = "./terraform-modules/modules/ec2/keys/stack_key.pub"
-
-
-//********************  Security Group  ********************//
-
-
-security_groups = [
-  {
-    name = "ec2-stack-sg"
-    ingress_rules = [
-
-      {
-        description      = "Allow HTTP from IPv4"
-        protocol         = "tcp"
-        from_port        = 80
-        to_port          = 80
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      },
-      {
-        description      = "Allow HTTP from IPv6"
-        protocol         = "tcp"
-        from_port        = 80
-        to_port          = 80
-        cidr_blocks      = []
-        ipv6_cidr_blocks = ["::/0"]
-      },
-      {
-        description      = "Allow HTTPS from IPv4"
-        protocol         = "tcp"
-        from_port        = 443
-        to_port          = 443
-        cidr_blocks      = []
-        ipv6_cidr_blocks = ["::/0"]
-      },
-      {
-        description      = "Allow Custom TCP from IPv6"
-        protocol         = "tcp"
-        from_port        = 2000
-        to_port          = 2000
-        cidr_blocks      = []
-        ipv6_cidr_blocks = ["::/0"]
-      },
-      {
-        description      = "Allow Custom TCP from IPv4"
-        protocol         = "tcp"
-        from_port        = 2000
-        to_port          = 2000
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      },
-      {
-        description      = "Allow HTTPS from IPv4"
-        protocol         = "tcp"
-        from_port        = 443
-        to_port          = 443
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      },
-      {
-        description      = "Allow SSH from IPv4"
-        protocol         = "tcp"
-        from_port        = 22
-        to_port          = 22
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      },
-      {
-        description      = "Allow SSH from IPv4"
-        protocol         = "tcp"
-        from_port        = 8080
-        to_port          = 8080
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      }
-    ]
-    egress_rules = [
-      {
-        description      = "Allow All Traffic from IPv4"
-        protocol         = "-1" # Indicates all traffic
-        from_port        = 0
-        to_port          = 0
-        cidr_blocks      = ["0.0.0.0/0"]
-        ipv6_cidr_blocks = []
-      },
-    ]
-  }
-
-]

@@ -1,3 +1,7 @@
+data "http" "myip" {
+  url = "https://checkip.amazonaws.com"
+}
+
 module "vpc" {
   source = "../../modules/vpc"
 
@@ -10,8 +14,21 @@ module "vpc" {
 
 module "sg" {
   source          = "../../modules/sg"
-  security_groups = local.security_groups
+  security_groups = var.security_groups
   vpc_id          = module.vpc.vpc_id
+}
+
+# SSH: allowed ONLY from your current public IP (auto-detected)
+resource "aws_security_group_rule" "ssh_from_my_ip" {
+  type              = "ingress"
+  security_group_id = module.sg.stack_ec2_sg_id
+
+  description = "Allow SSH from my public IP (auto-detected)"
+  protocol    = "tcp"
+  from_port   = 22
+  to_port     = 22
+
+  cidr_blocks = ["${chomp(data.http.myip.response_body)}/32"]
 }
 
 module "ec2" {

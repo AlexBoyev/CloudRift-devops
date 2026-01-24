@@ -24,7 +24,7 @@ pipeline {
         EC2_SSH_KEY      = credentials('ec2-ssh-key')
 
         EC2_USER         = 'ubuntu'
-        // Secret text credential containing only host/dns/ip (no protocol, no port)
+        // Secret text credential containing only host/dns/ip
         EC2_HOST         = credentials('ec2-host-ip')
 
         API_DIR          = '/home/ubuntu/new-backend'
@@ -45,15 +45,9 @@ pipeline {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh(label: 'SSH debug', script: '''bash -lc '
 set -euo pipefail
-
 echo "EC2_USER=${EC2_USER}"
 echo "EC2_HOST=${EC2_HOST}"
-
-echo "SSH keys loaded in agent:"
-ssh-add -L || true
-
-echo "Trying SSH handshake (verbose)..."
-ssh -vvv -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes \
+ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes \
   "${EC2_USER}@${EC2_HOST}" "echo ok"
 ' ''')
                 }
@@ -167,16 +161,20 @@ echo "Backend SHA: $(git rev-parse --short HEAD)"
 SCRIPT
 ' ''')
 
+                    // Compute SHA and TAG reliably; FAIL if SHA is empty.
                     script {
                         def sha = sh(
                             script: '''bash -lc '
 set -euo pipefail
 ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes \
-  "${EC2_USER}@${EC2_HOST}" \
-  "cd ${API_DIR} && git rev-parse --short HEAD"
+  "${EC2_USER}@${EC2_HOST}" "cd ${API_DIR} && git rev-parse --short HEAD"
 ' ''',
                             returnStdout: true
                         ).trim()
+
+                        if (!sha) {
+                            error("Failed to compute BACKEND_SHA (empty output from git rev-parse on EC2).")
+                        }
 
                         env.BACKEND_SHA = sha
                         env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
@@ -196,10 +194,22 @@ ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyA
                     sh(label: 'Build images', script: '''bash -lc '
 set -euo pipefail
 
+# Fail fast on Jenkins side if tag is missing
+if [ -z "${BACKEND_TAG:-}" ]; then
+  echo "ERROR: BACKEND_TAG is empty on Jenkins side"
+  exit 2
+fi
+
 ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=publickey -o PubkeyAuthentication=yes \
   "${EC2_USER}@${EC2_HOST}" \
   "API_DIR=\\"${API_DIR}\\" MINIKUBE_PROFILE=\\"${MINIKUBE_PROFILE}\\" BACKEND_TAG=\\"${BACKEND_TAG}\\" bash -s" <<'"'"'SCRIPT'"'"'
 set -euo pipefail
+
+# Ensure variables exist even under -u semantics
+: "${API_DIR:?API_DIR missing}"
+: "${MINIKUBE_PROFILE:=minikube}"
+: "${BACKEND_TAG:?BACKEND_TAG missing}"
+
 cd "$API_DIR"
 
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
@@ -221,11 +231,11 @@ cleanup_repo graph-service
 cleanup_repo postgres-db
 docker image prune -f || true
 
-docker build -t "backend-service:${BACKEND_TAG}" -f backend/Dockerfile backend/
-docker build -t "stack-service:${BACKEND_TAG}" -f stack/Dockerfile ./
+docker build -t "backend-service:${BACKEND_TAG}"   -f backend/Dockerfile    backend/
+docker build -t "stack-service:${BACKEND_TAG}"     -f stack/Dockerfile      ./
 docker build -t "linkedlist-service:${BACKEND_TAG}" -f linkedlist/Dockerfile ./
-docker build -t "graph-service:${BACKEND_TAG}" -f graph/Dockerfile ./
-docker build -t "postgres-db:${BACKEND_TAG}" -f database/Dockerfile ./
+docker build -t "graph-service:${BACKEND_TAG}"     -f graph/Dockerfile      ./
+docker build -t "postgres-db:${BACKEND_TAG}"       -f database/Dockerfile   ./
 
 echo "Images built:"
 docker images | grep -E "^(backend-service|stack-service|linkedlist-service|graph-service|postgres-db)[[:space:]]" || true

@@ -32,7 +32,8 @@ aws_session_token: str = ""  # Optional
 account_id: str = ""
 owner: str = ""  # Must match IAM username
 ec2_dns: str = ""  # NEW: Custom DNS name for EC2
-
+smee_url: str = ""
+smee_target: str = ""
 # -----------------------------
 # Constants
 # -----------------------------
@@ -181,6 +182,8 @@ def _apply_env(data: dict[str, str]) -> None:
 
     git_username = pick("GITHUB_USER", "GIT_USERNAME", "git_username")
     git_pat = pick("GITHUB_PAT", "GIT_PAT", "git_pat")
+    smee_url = pick("SMEE_URL", "smee_url")
+    smee_target = pick("SMEE_TARGET", "smee_target")
 
     missing = []
     if not aws_region: missing.append("AWS_REGION")
@@ -331,6 +334,9 @@ def _clean_env_for_subprocess() -> dict[str, str]:
         env["TF_VAR_ec2_dns"] = ec2_dns
     # Pass vars for AWS CLI
     env["AWS_ACCESS_KEY_ID"] = aws_access_token
+    env["SMEE_URL"] = smee_url
+
+    env["SMEE_TARGET"] = smee_target
     env["AWS_SECRET_ACCESS_KEY"] = aws_secret_token
     if aws_session_token: env["AWS_SESSION_TOKEN"] = aws_session_token
     env["AWS_DEFAULT_REGION"] = aws_region

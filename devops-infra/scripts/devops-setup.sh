@@ -8,6 +8,10 @@
 #  2) Added:   durable Postgres directory on EC2: /opt/cloudrift/postgres-data
 #  3) Added:   apply database/pvc.yaml BEFORE database/ (so PV/PVC bind before StatefulSet)
 #  4) Added:   same durable directory + pvc.yaml apply in systemd start-cloudrift.sh
+#
+# SECURITY FIX (Jenkins):
+#  5) Enforce Jenkins bind to localhost (127.0.0.1:8080) to prevent accidental public exposure
+#  6) Update Access Information: Jenkins is accessed via SSH tunnel (http://localhost:8080)
 
 set -euo pipefail
 
@@ -27,7 +31,6 @@ NC='\033[0m'
 : "${SKIP_FRONTEND_BUILD:=false}"
 : "${SKIP_DB_BUILD:=false}"
 
-# FIX: Log function defined to match your style
 log() { echo -e "${BLUE}[INFO]${NC} $1"; }
 print_status()  { echo -e "${GREEN}✓${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
@@ -52,10 +55,8 @@ USE_HELM="${3:-false}"
 SKIP_BUILD="${4:-false}"
 
 # -----------------------------
-# FIX 1: Robust .env LOADING
+# Robust .env LOADING
 # -----------------------------
-# Loads variables even if they are missing 'export' in the file
-# stripping Windows carriage returns (\r) to prevent syntax errors
 if [ -f "/home/${USER}/.env" ]; then
     log "Loading environment variables from /home/${USER}/.env..."
     # shellcheck disable=SC2046
@@ -93,7 +94,6 @@ echo ""
 # -----------------------------
 print_header "Step 1: Checking Prerequisites"
 
-# Heuristic: if /home/ubuntu exists, treat as EC2-ish
 if [ -d /home/ubuntu ]; then
   print_status "Detected EC2 environment"
   EC2_ENV=true
@@ -103,13 +103,77 @@ else
   EC2_USER="${USER:-}"
 fi
 
-# Auto-start toggle for EC2 systemd service (1=enable, 0=skip)
 ENABLE_AUTOSTART="${ENABLE_AUTOSTART:-1}"
 
 # Ensure kubectl uses ubuntu kubeconfig even if this script is invoked with sudo
 if [ "${EC2_ENV}" = true ]; then
   export KUBECONFIG="${KUBECONFIG:-/home/ubuntu/.kube/config}"
 fi
+
+# -----------------------------
+# Jenkins hardening helper (automation)
+# -----------------------------
+harden_jenkins_bind_localhost() {
+  print_header "Security: Hardening Jenkins (bind to 127.0.0.1:8080)"
+
+  if ! command_exists systemctl; then
+    print_warning "systemctl not available; skipping Jenkins hardening"
+    return 0
+  fi
+
+  if ! systemctl list-unit-files | grep -q '^jenkins\.service'; then
+    print_warning "jenkins.service not found; skipping Jenkins hardening"
+    return 0
+  fi
+
+  local DEFAULTS="/etc/default/jenkins"
+  sudo touch "$DEFAULTS"
+
+  # Ensure internal port is set
+  if grep -q "^HTTP_PORT=" "$DEFAULTS"; then
+    sudo sed -i "s/^HTTP_PORT=.*/HTTP_PORT=8080/" "$DEFAULTS"
+  else
+    echo "HTTP_PORT=8080" | sudo tee -a "$DEFAULTS" >/dev/null
+  fi
+
+  # Ensure JENKINS_ARGS exists
+  if ! grep -q "^JENKINS_ARGS=" "$DEFAULTS"; then
+    echo 'JENKINS_ARGS="--webroot=/var/cache/jenkins/war"' | sudo tee -a "$DEFAULTS" >/dev/null
+  fi
+
+  # Force listen address
+  if grep -q -- "--httpListenAddress=" "$DEFAULTS"; then
+    sudo sed -i "s/--httpListenAddress=[^ ]*/--httpListenAddress=127.0.0.1/g" "$DEFAULTS"
+  else
+    sudo sed -i 's/^JENKINS_ARGS="\([^"]*\)"/JENKINS_ARGS="\1 --httpListenAddress=127.0.0.1"/' "$DEFAULTS"
+  fi
+
+  sudo systemctl daemon-reload
+  sudo systemctl restart jenkins
+
+  # If still public bind, force systemd override (stronger)
+  if sudo ss -tunlp 2>/dev/null | grep -q '\*:8080'; then
+    print_warning "Jenkins still listening on *:8080. Applying systemd override..."
+
+    sudo mkdir -p /etc/systemd/system/jenkins.service.d
+    cat <<EOF | sudo tee /etc/systemd/system/jenkins.service.d/override.conf >/dev/null
+[Service]
+Environment="JENKINS_ARGS=--webroot=/var/cache/jenkins/war --httpListenAddress=127.0.0.1"
+EOF
+    sudo systemctl daemon-reload
+    sudo systemctl restart jenkins
+  fi
+
+  # Final verify and fail closed if not secured
+  if sudo ss -tunlp 2>/dev/null | grep -q '\*:8080'; then
+    print_error "SECURITY ERROR: Jenkins is still listening on *:8080 after hardening. Aborting."
+    sudo ss -tunlp | grep 8080 || true
+    exit 1
+  fi
+
+  print_status "Jenkins hardened (expected: 127.0.0.1:8080)"
+  sudo ss -tunlp | grep 8080 || true
+}
 
 # Check Docker
 if command_exists docker; then
@@ -202,31 +266,22 @@ sudo rm -rf /var/lib/apt/lists/* || true
 log "Cleaning Docker (safe on fresh EC2)..."
 sudo systemctl start docker >/dev/null 2>&1 || true
 
-# =============================
-# FIX: DO NOT PRUNE VOLUMES
-# =============================
-# This was the main reason your DB got wiped after "reset".
-# Old: sudo docker system prune -af --volumes || true
+# DO NOT PRUNE VOLUMES
 sudo docker system prune -af || true
 
 log "Disk space after cleanup:"
 df -h /
 
-# =============================
-# FIX: Ensure durable Postgres dir exists (EC2)
-# This must match the hostPath used by your PV (pvc.yaml updated accordingly).
-# =============================
+# Ensure durable Postgres dir exists (EC2)
 if [ "$EC2_ENV" = true ]; then
   log "Ensuring durable Postgres directory exists at /opt/cloudrift/postgres-data ..."
   sudo mkdir -p /opt/cloudrift/postgres-data || true
   sudo chmod 777 /opt/cloudrift/postgres-data || true
 fi
 
-
 if [ "$EC2_ENV" = true ]; then
   print_status "Setting up Minikube on EC2..."
 
-  # Ensure minikube/kube dirs exist and owned by ubuntu
   sudo mkdir -p "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
   sudo chown -R "${EC2_USER}:${EC2_USER}" "/home/${EC2_USER}/.minikube" "/home/${EC2_USER}/.kube"
 
@@ -237,11 +292,9 @@ if [ "$EC2_ENV" = true ]; then
     sudo -u "$EC2_USER" minikube start --driver=docker --memory=4096mb --cpus=2
     print_status "Minikube started successfully"
 
-    # Enable Ingress Addon immediately after start
     print_status "Enabling Ingress Controller..."
     sudo -u "$EC2_USER" minikube addons enable ingress
 
-    # Wait for the addon controller to be ready (correct selector)
     kubectl wait --namespace ingress-nginx \
       --for=condition=ready pod \
       --selector=app.kubernetes.io/component=controller \
@@ -285,7 +338,6 @@ normalize_url() {
 }
 
 _repo_auth_url() {
-  # If PAT is provided, return URL with auth; else return normalized clean URL.
   local repo_url="$1"
   local normalized
   normalized="$(normalize_url "$repo_url")"
@@ -328,19 +380,15 @@ ensure_repo() {
       sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir/.git" 2>/dev/null || true
       sudo chmod -R u+rwX "$target_dir/.git" 2>/dev/null || true
     fi
-    # Use auth URL for fetch/pull if PAT exists
     git -C "$target_dir" remote set-url origin "$auth_url" >/dev/null 2>&1 || true
     git -C "$target_dir" fetch --all --tags >/dev/null 2>&1 || true
-    # Reset to origin/main to avoid drift
     git -C "$target_dir" fetch origin main >/dev/null 2>&1 || true
     git -C "$target_dir" reset --hard origin/main >/dev/null 2>&1 || true
     print_status "$repo_name repository updated from remote"
   fi
 
-  # Always reset remote to clean URL
   git -C "$target_dir" remote set-url origin "$clean_url" >/dev/null 2>&1 || true
 
-  # FIX: FORCE PERMISSIONS
   if [ "$EC2_ENV" = true ]; then
      sudo chown -R "${EC2_USER}:${EC2_USER}" "$target_dir" 2>/dev/null || true
      sudo chmod -R u+rwX "$target_dir" 2>/dev/null || true
@@ -366,7 +414,6 @@ if [ "$EC2_ENV" = true ]; then
   ensure_repo "$BACKEND_REPO_URL" "/home/${EC2_USER}/new-backend" "backend"
   ensure_repo "$UI_REPO_URL" "/home/${EC2_USER}/new-frontend" "frontend"
 
-  # FIX: SENIOR PATCH - Ensure the YAML on disk is updated before images or deployment
   log "Patching LinkedList memory limit to 512Mi on local disk..."
   sed -i 's/memory: 128Mi/memory: 512Mi/g' "$REPO_DIR/devops-infra/kubernetes/data-structures/linkedlist.yaml" || true
 else
@@ -377,7 +424,6 @@ fi
 print_header "Step 3b: Patching YAML Templates"
 log "Replacing placeholder tags (e.g., \$(BACKEND_TAG)) in YAMLs with 'latest'..."
 
-# This forces K8s to look for the 'latest' tag we are about to build
 if [ -d "$REPO_DIR/devops-infra/kubernetes" ]; then
     find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(BACKEND_TAG)/latest/g' {} +
     find "$REPO_DIR/devops-infra/kubernetes" -name "*.yaml" -type f -exec sed -i 's/\$(FRONTEND_TAG)/latest/g' {} +
@@ -458,7 +504,6 @@ if [ "$SKIP_BUILD" = "false" ]; then
       return 1
     fi
 
-    # FIX: Added simple retry logic
     if ! $DOCKER_CMD build -f "$context/$dockerfile" -t "$image_name" "$context" 2>&1 | tee /tmp/docker-build.log; then
       echo "  ⚠ First attempt failed. Retrying..."
       if ! $DOCKER_CMD build -f "$context/$dockerfile" -t "$image_name" "$context"; then
@@ -469,14 +514,9 @@ if [ "$SKIP_BUILD" = "false" ]; then
     fi
 
     if $DOCKER_CMD images --format "{{.Repository}}:{{.Tag}}" | grep -q "^${image_name}$"; then
-      # -----------------------------
-      # FIX 2: Double-Tagging Strategy
-      # -----------------------------
-      # Extracts "backend-service" from "backend-service:backend-12345"
       local base_img
       base_img=$(echo "$image_name" | cut -d':' -f1)
 
-      # Tag as latest so K8s YAMLs (which expect :latest) can find it
       if $DOCKER_CMD tag "$image_name" "${base_img}:latest"; then
           print_status "$display_name built as $image_name and tagged as ${base_img}:latest"
           IMAGES_BUILT=$((IMAGES_BUILT + 1))
@@ -493,32 +533,30 @@ if [ "$SKIP_BUILD" = "false" ]; then
     return 1
   }
 
-if [ "$SKIP_BACKEND_BUILD" != "true" ]; then
-  build_image "Dockerfile"             "$BACKEND_REPO_PATH/backend" "backend-service:${BACKEND_TAG}"      "Backend Service"
-  build_image "stack/Dockerfile"      "$BACKEND_REPO_PATH"         "stack-service:${BACKEND_TAG}"        "Stack Service"
-  build_image "linkedlist/Dockerfile" "$BACKEND_REPO_PATH"         "linkedlist-service:${BACKEND_TAG}"   "LinkedList Service"
-  build_image "graph/Dockerfile"      "$BACKEND_REPO_PATH"         "graph-service:${BACKEND_TAG}"        "Graph Service"
-fi
+  if [ "$SKIP_BACKEND_BUILD" != "true" ]; then
+    build_image "Dockerfile"             "$BACKEND_REPO_PATH/backend" "backend-service:${BACKEND_TAG}"      "Backend Service"
+    build_image "stack/Dockerfile"       "$BACKEND_REPO_PATH"         "stack-service:${BACKEND_TAG}"        "Stack Service"
+    build_image "linkedlist/Dockerfile"  "$BACKEND_REPO_PATH"         "linkedlist-service:${BACKEND_TAG}"   "LinkedList Service"
+    build_image "graph/Dockerfile"       "$BACKEND_REPO_PATH"         "graph-service:${BACKEND_TAG}"        "Graph Service"
+  fi
 
-# Frontend image
-if [ "$SKIP_FRONTEND_BUILD" != "true" ]; then
-  build_image "Dockerfile" "$FRONTEND_REPO_PATH" "ui-service:${FRONTEND_TAG}" "Frontend UI Service"
-fi
+  if [ "$SKIP_FRONTEND_BUILD" != "true" ]; then
+    build_image "Dockerfile" "$FRONTEND_REPO_PATH" "ui-service:${FRONTEND_TAG}" "Frontend UI Service"
+  fi
 
-# Database image
-if [ "$SKIP_DB_BUILD" != "true" ]; then
-  build_image "database/Dockerfile" "$BACKEND_REPO_PATH" "postgres-db:${DB_TAG}" "PostgreSQL Database"
-fi
+  if [ "$SKIP_DB_BUILD" != "true" ]; then
+    build_image "database/Dockerfile" "$BACKEND_REPO_PATH" "postgres-db:${DB_TAG}" "PostgreSQL Database"
+  fi
 
   echo ""
   print_status "Verifying built images..."
   REQUIRED_IMAGES=(
-  "backend-service:$BACKEND_TAG"
-  "ui-service:$FRONTEND_TAG"
-  "stack-service:$BACKEND_TAG"
-  "linkedlist-service:$BACKEND_TAG"
-  "graph-service:$BACKEND_TAG"
-  "postgres-db:$DB_TAG"
+    "backend-service:$BACKEND_TAG"
+    "ui-service:$FRONTEND_TAG"
+    "stack-service:$BACKEND_TAG"
+    "linkedlist-service:$BACKEND_TAG"
+    "graph-service:$BACKEND_TAG"
+    "postgres-db:$DB_TAG"
   )
   MISSING=0
   for img in "${REQUIRED_IMAGES[@]}"; do
@@ -548,67 +586,49 @@ fi
 # -----------------------------
 print_header "Step 5: Deploying Kubernetes Resources with Dependency Logic"
 
-# Set DEVOPS_INFRA context
 DEVOPS_INFRA="/home/${EC2_USER}/new-devops-local/devops-infra"
 
-# 1. Apply Namespaces and Secrets first
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/namespaces/"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/secret.yaml"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret.yaml"
 
-# 2. Deploy Database (The Foundation)
 log "Deploying Database..."
-# =============================
-# FIX: Apply DB resources explicitly (order matters for persistence)
-#  - pvc.yaml creates/binds PV+PVC (static hostPath: /opt/cloudrift/postgres-data)
-#  - secret.yaml provides credentials
-#  - service.yaml creates headless + ClusterIP services
-#  - statefulset.yaml mounts the fixed PVC (postgres-pvc)
-# =============================
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/pvc.yaml"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/secret.yaml"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/service.yaml"
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/statefulset.yaml"
-# Wait for the database pod to be ready based on its readinessProbe (pg_isready)
 kubectl rollout status statefulset/postgres-db --timeout=180s
 print_status "Database is online and ready"
 
-# 3. Deploy Data Structure Services
 log "Deploying Microservices (Stack, LinkedList, Graph)..."
 if [ -d "$DEVOPS_INFRA/kubernetes/data-structures" ]; then
   kubectl apply -f "$DEVOPS_INFRA/kubernetes/data-structures/"
   kubectl rollout status deployment/stack-deployment --timeout=120s
   kubectl rollout status deployment/linkedlist-deployment --timeout=120s
   kubectl rollout status deployment/graph-deployment --timeout=120s
-
   print_status "Data structure services are ready"
 fi
 
-# 4. Deploy Backend (Depends on Database)
 log "Deploying Backend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/"
 kubectl rollout status deployment/backend-deployment --timeout=120s
 print_status "Backend is ready"
 
-# 5. Deploy Frontend and Ingress
 log "Deploying Frontend..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/frontend/"
 print_status "Frontend deployed"
+
 log "Deploying Ingress rules..."
 kubectl apply -f "$DEVOPS_INFRA/kubernetes/ingress/"
 print_status "Ingress rules applied"
 
-# CRITICAL FIX: Skip custom ingress controller deployment
-# The Minikube addon already provides the controller
 if [ -d "$DEVOPS_INFRA/kubernetes/ingress-controller" ]; then
   log "Skipping custom ingress-controller (using Minikube addon instead)"
 fi
 
-# FIX: Monitoring Logic with Helm Fallback
 if [ "$DEPLOY_MONITORING" = "true" ]; then
   print_header "Step 6: Deploying Monitoring Stack"
 
-  # Check if we have the local YAML files first
   if [ -d "$DEVOPS_INFRA/kubernetes/monitoring/prometheus" ]; then
       echo "Deploying Prometheus from local YAML..."
       kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/prometheus/"
@@ -623,14 +643,11 @@ if [ "$DEPLOY_MONITORING" = "true" ]; then
       kubectl apply -f "$DEVOPS_INFRA/kubernetes/monitoring/grafana/"
       print_status "Monitoring stack deployed via YAML"
   else
-      # Fallback to Helm if files are missing
       print_status "Monitoring YAMLs not found. Installing via Helm..."
 
-      # Add repo if missing
       helm repo add prometheus-community https://prometheus-community.github.io/helm-charts >/dev/null 2>&1 || true
       helm repo update >/dev/null 2>&1 || true
 
-      # Install
       helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
         --create-namespace \
         --namespace monitoring \
@@ -642,51 +659,35 @@ if [ "$DEPLOY_MONITORING" = "true" ]; then
 fi
 
 print_header "Step 6b: Forcing Update of Running Pods"
-
 echo "♻️  Restarting Deployments to pick up the new Docker images..."
 
-# -----------------------------
-# FIX 3: Explicit StatefulSet Restart
-# -----------------------------
 kubectl rollout restart statefulset postgres-db || true
 
-# Restart standard deployments
 kubectl rollout restart deployment backend-deployment
 kubectl rollout restart deployment stack-deployment
 kubectl rollout restart deployment linkedlist-deployment
 kubectl rollout restart deployment graph-deployment
 
-
-# -----------------------------
-# Wait for deployments
-# -----------------------------
 print_header "Step 7: Waiting for Deployments"
 
-kubectl rollout status statefulset/postgres-db        --timeout=300s 2>/dev/null || print_warning "DB rollout timeout"
-kubectl rollout status deployment/frontend-deployment --timeout=300s 2>/dev/null || print_warning "Frontend rollout timeout"
-kubectl rollout status deployment/backend-deployment  --timeout=300s 2>/dev/null || print_warning "Backend rollout timeout"
-kubectl rollout status deployment/stack-deployment    --timeout=300s 2>/dev/null || print_warning "Stack rollout timeout"
+kubectl rollout status statefulset/postgres-db          --timeout=300s 2>/dev/null || print_warning "DB rollout timeout"
+kubectl rollout status deployment/frontend-deployment   --timeout=300s 2>/dev/null || print_warning "Frontend rollout timeout"
+kubectl rollout status deployment/backend-deployment    --timeout=300s 2>/dev/null || print_warning "Backend rollout timeout"
+kubectl rollout status deployment/stack-deployment      --timeout=300s 2>/dev/null || print_warning "Stack rollout timeout"
 kubectl rollout status deployment/linkedlist-deployment --timeout=300s 2>/dev/null || print_warning "LinkedList rollout timeout"
-kubectl rollout status deployment/graph-deployment    --timeout=300s 2>/dev/null || print_warning "Graph rollout timeout"
+kubectl rollout status deployment/graph-deployment      --timeout=300s 2>/dev/null || print_warning "Graph rollout timeout"
 
 # -----------------------------
 # External access (WITH PERMISSION FIX)
 # -----------------------------
-# -----------------------------
-# Step 8: Configuring Auto-Start Service
-# -----------------------------
 print_header "Step 8: Configuring Auto-Start Service"
 
-# -----------------------------
-# FIX: Kill Conflicting Port 80 Services (Fixes 502 Bad Gateway)
-# -----------------------------
 if [ "$EC2_ENV" = true ]; then
     log "Stopping Host Nginx to free up Port 80..."
     sudo systemctl stop nginx >/dev/null 2>&1 || true
     sudo systemctl disable nginx >/dev/null 2>&1 || true
 fi
 
-# Kill any existing port-forwards to prevent conflicts
 pkill -f 'kubectl port-forward' >/dev/null 2>&1 || true
 sleep 2
 
@@ -704,9 +705,6 @@ if [ "$EC2_ENV" = true ]; then
   else
     print_status "Setting up Systemd Services (Setup + Proxy)..."
 
-    # -----------------------------------------------------------
-    # 1. Create the Setup Script (Minikube + Apps)
-    # -----------------------------------------------------------
 cat << 'EOF' | sudo tee /usr/local/bin/start-cloudrift.sh > /dev/null
 #!/bin/bash
 set -euo pipefail
@@ -723,26 +721,17 @@ echo "--- CloudRift Setup: $(date) ---"
 
 run_u() { sudo -u "${U}" -H bash -lc "$*"; }
 
-# 1. Basics
 sudo systemctl start docker >/dev/null 2>&1 || true
 sudo mkdir -p /home/ubuntu/.kube /home/ubuntu/.minikube
 sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube /home/ubuntu/.minikube
 
-# =============================
-# FIX: durable Postgres hostPath directory (matches PV hostPath)
-# =============================
 sudo mkdir -p /opt/cloudrift/postgres-data || true
 sudo chmod 777 /opt/cloudrift/postgres-data || true
 
-# 2. Start Minikube (Idempotent)
 run_u "minikube status --profile='${PROFILE}' >/dev/null 2>&1 || minikube start --profile='${PROFILE}' --driver='${DRIVER}' --memory=4096mb --cpus=2"
 
-# 3. Apply Manifests
 run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; kubectl config use-context '${PROFILE}' >/dev/null 2>&1 || true"
 
-# =============================
-# FIX: Apply DB manifests explicitly in safe order on every boot
-# =============================
 run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; \
        kubectl apply -f '${K8S_PATH}/database/pvc.yaml' || true; \
        kubectl apply -f '${K8S_PATH}/database/secret.yaml' || true; \
@@ -753,7 +742,6 @@ run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; \
        kubectl apply -f '${K8S_PATH}/frontend/' || true; \
        kubectl apply -f '${K8S_PATH}/ingress/'  || true"
 
-# 4. Monitoring (Optional)
 if run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; kubectl get ns monitoring >/dev/null 2>&1"; then
   echo "Scaling monitoring..."
   run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; kubectl scale deployment prometheus --replicas=1 -n monitoring || true"
@@ -765,9 +753,6 @@ EOF
     sudo chmod +x /usr/local/bin/start-cloudrift.sh
     print_status "Created setup script: /usr/local/bin/start-cloudrift.sh"
 
-    # -----------------------------------------------------------
-    # 2. Create k8s-proxy Service (Port Forwarder)
-    # -----------------------------------------------------------
 cat << 'EOF' | sudo tee /etc/systemd/system/k8s-proxy.service > /dev/null
 [Unit]
 Description=Kubernetes Ingress Proxy (Port 80)
@@ -777,11 +762,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User=root
-# Force kubectl to use the ubuntu config file
 Environment=KUBECONFIG=/home/ubuntu/.kube/config
-# The command runs directly (no loop needed)
 ExecStart=/usr/local/bin/kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 80:80 --address=0.0.0.0
-# Systemd handles the restart logic
 Restart=always
 RestartSec=5
 
@@ -790,9 +772,6 @@ WantedBy=multi-user.target
 EOF
     print_status "Created service: k8s-proxy.service"
 
-    # -----------------------------------------------------------
-    # 3. Create cloudrift-setup Service (Trigger)
-    # -----------------------------------------------------------
 cat << 'EOF' | sudo tee /etc/systemd/system/cloudrift-setup.service > /dev/null
 [Unit]
 Description=CloudRift Setup (Minikube Start)
@@ -808,12 +787,8 @@ WantedBy=multi-user.target
 EOF
     print_status "Created service: cloudrift-setup.service"
 
-    # -----------------------------------------------------------
-    # 4. Enable and Start
-    # -----------------------------------------------------------
     sudo systemctl daemon-reload
 
-    # Disable old service if it exists (cleanup)
     sudo systemctl disable --now cloudrift.service 2>/dev/null || true
 
     sudo systemctl enable cloudrift-setup
@@ -834,15 +809,18 @@ EOF
   fi
 
 else
-  # -----------------------------
-  # Local flow (Non-EC2)
-  # -----------------------------
   echo "Starting port-forward for local access..."
-  # Use high port for local to avoid sudo requirement
   kubectl port-forward -n ingress-nginx svc/ingress-nginx-controller 32080:80 --address=0.0.0.0 &
   PORT_FORWARD_PID=$!
   echo "$PORT_FORWARD_PID" > /tmp/k8s-port-forward.pid
   print_status "Port-forward started on port 32080 (PID: $PORT_FORWARD_PID)"
+fi
+
+# -----------------------------
+# Jenkins hardening must run BEFORE final access info is printed
+# -----------------------------
+if [ "$EC2_ENV" = true ]; then
+  harden_jenkins_bind_localhost
 fi
 
 print_header "Deployment Status"
@@ -876,7 +854,9 @@ if [ "$EC2_ENV" = true ]; then
   echo -e "SSH connection: \"ssh -i <path_to_pem> ubuntu@${EC2_PUBLIC_IP}\""
   echo ""
   echo -e "${BLUE}Other Services:${NC}"
-  echo -e "  - Jenkins:  http://${EC2_PUBLIC_IP}:8080/"
+  echo -e "  - Jenkins (secure): SSH tunnel required"
+  echo -e "    ssh -i <path_to_pem> -L 8080:localhost:8080 ubuntu@${EC2_PUBLIC_IP}"
+  echo -e "    Then open: http://localhost:8080"
   echo -e "  - API:      http://${EC2_PUBLIC_IP}/api/"
   echo ""
   echo -e "${BLUE}Debugging:${NC}"

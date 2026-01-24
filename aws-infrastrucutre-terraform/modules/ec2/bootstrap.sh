@@ -75,7 +75,45 @@ sudo apt-get update -y
 log "Installing base packages..."
 sudo apt-get install -y \
   ca-certificates curl gnupg lsb-release apt-transport-https software-properties-common \
-  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk jq nginx
+  unzip git python3 python3-pip docker.io conntrack socat net-tools openjdk-17-jdk jq nginx openssl
+
+# -------------------------------------------------------------------
+# Ensure /home/<user>/.env exists early (systemd EnvironmentFile needs it)
+# -------------------------------------------------------------------
+ENV_FILE="${TARGET_HOME}/.env"
+log "Ensuring ${ENV_FILE} exists (for systemd EnvironmentFile)..."
+sudo -u "${TARGET_USER}" touch "${ENV_FILE}"
+sudo chmod 600 "${ENV_FILE}" || true
+sudo chown "${TARGET_USER}:${TARGET_USER}" "${ENV_FILE}"
+
+# Normalize Windows CRLF early
+sed -i 's/\r$//' "${ENV_FILE}" || true
+
+# Ensure SMEE_URL/SMEE_TARGET exist (NO QUOTES; systemd does not strip them)
+if ! grep -q '^SMEE_URL=' "${ENV_FILE}"; then
+  echo 'SMEE_URL=https://smee.io/3kEdRwsh19vXOgv' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+if ! grep -q '^SMEE_TARGET=' "${ENV_FILE}"; then
+  echo 'SMEE_TARGET=http://127.0.0.1:8080/generic-webhook-trigger/invoke' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+
+# -------------------------------------------------------------------
+# Node.js + smee-client (GitHub webhook relay)
+# -------------------------------------------------------------------
+log "Installing Node.js (for smee-client)..."
+if ! need_cmd node; then
+  curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+else
+  warn "Node.js already installed; skipping."
+fi
+
+log "Installing smee-client..."
+if ! command -v smee >/dev/null 2>&1; then
+  sudo npm install -g smee-client
+else
+  warn "smee-client already installed; skipping."
+fi
 
 # -------------------------------------------------------------------
 # AWS CLI v2
@@ -189,6 +227,32 @@ if ! sudo -u jenkins sh -c "grep -q 'github.com' /var/lib/jenkins/.ssh/known_hos
   ssh-keyscan -t rsa,ecdsa,ed25519 github.com 2>/dev/null | sudo -u jenkins tee -a /var/lib/jenkins/.ssh/known_hosts >/dev/null || true
 fi
 sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
+
+# -------------------------------------------------------------------
+# smee systemd service (reads SMEE_URL/SMEE_TARGET from /home/<user>/.env)
+# -------------------------------------------------------------------
+log "Creating/Updating smee-jenkins.service..."
+cat <<EOF | sudo tee /etc/systemd/system/smee-jenkins.service >/dev/null
+[Unit]
+Description=CloudRift Smee relay (GitHub webhooks -> local Jenkins)
+After=network.target jenkins.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=${TARGET_USER}
+EnvironmentFile=${ENV_FILE}
+ExecStart=/usr/bin/env smee -u \${SMEE_URL} --target \${SMEE_TARGET}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now smee-jenkins
+sudo systemctl restart smee-jenkins || true
 
 # -------------------------------------------------------------------
 # Docker
@@ -372,10 +436,7 @@ if [ "${START_MINIKUBE}" = "1" ] && [ "${ENABLE_INGRESS}" = "1" ]; then
     fi
 
     kubectl apply -f '${INGRESS_CONTROLLER_PATH}'
-
-    # Wait for controller to be ready
     kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=240s
-
     kubectl apply -f '${INGRESS_RULES_PATH}'
 
     kubectl get pods -n ingress-nginx -o wide || true

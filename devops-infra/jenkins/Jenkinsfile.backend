@@ -7,22 +7,27 @@ pipeline {
         disableConcurrentBuilds()
     }
 
+    parameters {
+        string(name: 'EC2_HOST', defaultValue: '', description: 'EC2 hostname/IP (optional if credential ec2-host-ip is set)')
+        string(name: 'EC2_USER', defaultValue: 'ubuntu', description: 'EC2 SSH user')
+        string(name: 'DEVOPS_REPO_URL', defaultValue: 'https://github.com/AlexBoyev/CloudRift-devops.git', description: 'DevOps repo URL')
+        string(name: 'API_REPO_URL', defaultValue: 'https://github.com/AlexBoyev/CloudRift-backend.git', description: 'Backend repo URL')
+        string(name: 'REPO_DIR', defaultValue: '/home/ubuntu/CloudRift-devops', description: 'DevOps repo dir on EC2')
+        string(name: 'API_DIR', defaultValue: '/home/ubuntu/CloudRift-backend', description: 'Backend repo dir on EC2')
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Backend branch to deploy')
+        string(name: 'MINIKUBE_PROFILE', defaultValue: 'minikube', description: 'Minikube profile name on EC2')
+    }
+
     environment {
-        // Get EC2 host from credentials (stored as secret text)
-        EC2_HOST = credentials('ec2-host-ip')
-        EC2_USER = 'ubuntu'
-
-        // Repo URLs and directories
-        DEVOPS_REPO_URL = 'https://github.com/AlexBoyev/CloudRift-devops.git'
-        API_REPO_URL = 'https://github.com/AlexBoyev/CloudRift-backend.git'
-        REPO_DIR = '/home/ubuntu/CloudRift-devops'
-        API_DIR = '/home/ubuntu/CloudRift-backend'
-        BRANCH_NAME = 'main'
-        MINIKUBE_PROFILE = 'minikube'
-
         // Jenkins credentials IDs
+        // - github-pat-token : Username/Password (PAT in password field) (your logs show this works)
+        // - ec2-ssh-key      : SSH private key credential
+        // - ec2-host-ip      : Username/Password where PASSWORD contains host, e.g. ec2-44-222-234-168.compute-1.amazonaws.com
         GITHUB_PAT_CRED = 'github-pat-token'
-        EC2_SSH_CRED = 'ec2-ssh-key'
+        EC2_SSH_CRED    = 'ec2-ssh-key'
+        EC2_HOST_FALLBACK_CRED = 'ec2-host-ip'
+
+        EC2_HOST_EFFECTIVE = ''
 
         BACKEND_SHA = ''
         BACKEND_TAG = ''
@@ -36,24 +41,50 @@ pipeline {
             }
         }
 
+        stage('Resolve EC2 Target') {
+            steps {
+                // ec2-host-ip is Username/Password; host is stored in PASSWORD
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${env.EC2_HOST_FALLBACK_CRED}",
+                        usernameVariable: 'EC2_HOST_USER_UNUSED',
+                        passwordVariable: 'EC2_HOST_FROM_CRED'
+                    )
+                ]) {
+                    script {
+                        env.EC2_HOST_EFFECTIVE = (params.EC2_HOST?.trim())
+                            ? params.EC2_HOST.trim()
+                            : (env.EC2_HOST_FROM_CRED?.trim() ?: '')
+                    }
+                }
+
+                script {
+                    if (!env.EC2_HOST_EFFECTIVE?.trim()) {
+                        error("EC2_HOST is required (set the EC2_HOST parameter or configure credential '${env.EC2_HOST_FALLBACK_CRED}' with the hostname in the PASSWORD field)")
+                    }
+                    echo "Using EC2_HOST_EFFECTIVE=${env.EC2_HOST_EFFECTIVE}"
+                }
+            }
+        }
+
         stage('SSH Preflight') {
             steps {
                 withCredentials([
                     usernamePassword(credentialsId: "${env.GITHUB_PAT_CRED}", usernameVariable: 'GITHUB_PAT_USR', passwordVariable: 'GITHUB_PAT_PSW')
                 ]) {
                     sshagent(credentials: ["${env.EC2_SSH_CRED}"]) {
-                        sh(label: 'SSH handshake test', script: '''bash -lc "
+                        sh(label: 'SSH handshake test', script: '''#!/usr/bin/env bash
 set -euo pipefail
 
-echo "Testing SSH connection to: ${EC2_HOST}"
+: "${EC2_HOST_EFFECTIVE:?EC2_HOST is required}"
+: "${EC2_USER:?EC2_USER is required}"
 
-ssh -o StrictHostKeyChecking=no \\
-    -o PreferredAuthentications=publickey \\
-    -o PubkeyAuthentication=yes \\
-    -o ConnectTimeout=10 \\
-    \\"${EC2_USER}@${EC2_HOST}\\" \\
-    'echo \"SSH connection successful\"'
-"''')
+ssh -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=publickey \
+    -o PubkeyAuthentication=yes \
+    "${EC2_USER}@${EC2_HOST_EFFECTIVE}" \
+    'echo ok'
+''')
                     }
                 }
             }
@@ -65,52 +96,58 @@ ssh -o StrictHostKeyChecking=no \\
                     usernamePassword(credentialsId: "${env.GITHUB_PAT_CRED}", usernameVariable: 'GITHUB_PAT_USR', passwordVariable: 'GITHUB_PAT_PSW')
                 ]) {
                     sshagent(credentials: ["${env.EC2_SSH_CRED}"]) {
-                        sh(label: 'Sync DevOps repo', script: '''bash -lc "
+                        sh(label: 'Sync DevOps repo', script: '''#!/usr/bin/env bash
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no \\
-    -o PreferredAuthentications=publickey \\
-    -o PubkeyAuthentication=yes \\
-    \\"${EC2_USER}@${EC2_HOST}\\" \\
-    \\"GITHUB_PAT=\\\\\\"${GITHUB_PAT_PSW}\\\\\\" DEVOPS_REPO=\\\\\\"${DEVOPS_REPO_URL}\\\\\\" REPO_DIR=\\\\\\"${REPO_DIR}\\\\\\" bash -s\\" <<'SCRIPT'
+: "${EC2_HOST_EFFECTIVE:?EC2_HOST is required}"
+: "${EC2_USER:?EC2_USER is required}"
+: "${GITHUB_PAT_PSW:?GITHUB_PAT_PSW missing}"
+: "${DEVOPS_REPO_URL:?DEVOPS_REPO_URL missing}"
+: "${REPO_DIR:?REPO_DIR missing}"
+
+ssh -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=publickey \
+    -o PubkeyAuthentication=yes \
+    "${EC2_USER}@${EC2_HOST_EFFECTIVE}" \
+    "GITHUB_PAT='${GITHUB_PAT_PSW}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 normalize_url() {
-  local input=\\"$1\\"
-  if echo \\"$input\\" | grep -qiE '^git@github.com:'; then
-    input=$(echo \\"$input\\" | sed -E 's|^git@github.com:|https://github.com/|')
-  elif echo \\"$input\\" | grep -qiE '^ssh://git@github.com/'; then
-    input=$(echo \\"$input\\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-  elif ! echo \\"$input\\" | grep -qiE '^https?://'; then
-    input=\\"https://$input\\"
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
   fi
-  echo \\"$input\\"
+  echo "$input"
 }
 
-FULL_URL=\\"$(normalize_url \\"$DEVOPS_REPO\\")\\"
-AUTH_URL=\\"$FULL_URL\\"
+FULL_URL="$(normalize_url "$DEVOPS_REPO")"
+AUTH_URL="$FULL_URL"
 
-if echo \\"$FULL_URL\\" | grep -qiE '^https://github.com/'; then
-  AUTH_URL=\\"$(echo \\"$FULL_URL\\" | sed -E \\"s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|\\")\\"
+if echo "$FULL_URL" | grep -qiE '^https://github.com/'; then
+  AUTH_URL="$(echo "$FULL_URL" | sed -E "s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|")"
 fi
 
-if [ ! -d \\"$REPO_DIR/.git\\" ]; then
-  mkdir -p \\"$REPO_DIR\\"
-  echo \\"Cloning DevOps repo...\"
-  git clone \\"$AUTH_URL\\" \\"$REPO_DIR\\"
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  echo "Cloning DevOps repo..."
+  git clone "$AUTH_URL" "$REPO_DIR"
 else
-  echo \\"Updating DevOps repo...\"
-  cd \\"$REPO_DIR\\"
-  git config --global --add safe.directory \\"$REPO_DIR\\" || true
-  git remote set-url origin \\"$AUTH_URL\\" || true
+  echo "Updating DevOps repo..."
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR" || true
+  git remote set-url origin "$AUTH_URL" || true
   git fetch --all --prune
   git reset --hard origin/main
 fi
 
-cd \\"$REPO_DIR\\"
-echo \\"DevOps commit: $(git rev-parse --short HEAD)\\"
+cd "$REPO_DIR"
+echo "DevOps commit: $(git rev-parse --short HEAD)"
 SCRIPT
-"''')
+''')
                     }
                 }
             }
@@ -122,58 +159,65 @@ SCRIPT
                     usernamePassword(credentialsId: "${env.GITHUB_PAT_CRED}", usernameVariable: 'GITHUB_PAT_USR', passwordVariable: 'GITHUB_PAT_PSW')
                 ]) {
                     sshagent(credentials: ["${env.EC2_SSH_CRED}"]) {
-                        sh(label: 'Sync backend repo', script: '''bash -lc "
+                        sh(label: 'Sync backend repo', script: '''#!/usr/bin/env bash
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no \\
-    -o PreferredAuthentications=publickey \\
-    -o PubkeyAuthentication=yes \\
-    \\"${EC2_USER}@${EC2_HOST}\\" \\
-    \\"BRANCH=\\\\\\"${BRANCH_NAME}\\\\\\" GITHUB_PAT=\\\\\\"${GITHUB_PAT_PSW}\\\\\\" API_REPO=\\\\\\"${API_REPO_URL}\\\\\\" API_DIR=\\\\\\"${API_DIR}\\\\\\" bash -s\\" <<'SCRIPT'
+: "${EC2_HOST_EFFECTIVE:?EC2_HOST is required}"
+: "${EC2_USER:?EC2_USER is required}"
+: "${GITHUB_PAT_PSW:?GITHUB_PAT_PSW missing}"
+: "${API_REPO_URL:?API_REPO_URL missing}"
+: "${API_DIR:?API_DIR missing}"
+: "${BRANCH_NAME:=main}"
+
+ssh -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=publickey \
+    -o PubkeyAuthentication=yes \
+    "${EC2_USER}@${EC2_HOST_EFFECTIVE}" \
+    "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT_PSW}' API_REPO='${API_REPO_URL}' API_DIR='${API_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
-: \\"${BRANCH:=main}\\"
+: "${BRANCH:=main}"
 
 normalize_url() {
-  local input=\\"$1\\"
-  if echo \\"$input\\" | grep -qiE '^git@github.com:'; then
-    input=$(echo \\"$input\\" | sed -E 's|^git@github.com:|https://github.com/|')
-  elif echo \\"$input\\" | grep -qiE '^ssh://git@github.com/'; then
-    input=$(echo \\"$input\\" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
-  elif ! echo \\"$input\\" | grep -qiE '^https?://'; then
-    input=\\"https://$input\\"
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
   fi
-  echo \\"$input\\"
+  echo "$input"
 }
 
-FULL_URL=\\"$(normalize_url \\"$API_REPO\\")\\"
-AUTH_URL=\\"$FULL_URL\\"
+FULL_URL="$(normalize_url "$API_REPO")"
+AUTH_URL="$FULL_URL"
 
-if echo \\"$FULL_URL\\" | grep -qiE '^https://github.com/'; then
-  AUTH_URL=\\"$(echo \\"$FULL_URL\\" | sed -E \\"s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|\\")\\"
+if echo "$FULL_URL" | grep -qiE '^https://github.com/'; then
+  AUTH_URL="$(echo "$FULL_URL" | sed -E "s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|")"
 fi
 
-if [ ! -d \\"$API_DIR/.git\\" ]; then
-  mkdir -p \\"$API_DIR\\"
-  echo \\"Cloning backend repo (branch: $BRANCH)...\\"
-  git clone -b \\"$BRANCH\\" \\"$AUTH_URL\\" \\"$API_DIR\\"
+if [ ! -d "$API_DIR/.git" ]; then
+  mkdir -p "$API_DIR"
+  echo "Cloning backend repo (branch: $BRANCH)..."
+  git clone -b "$BRANCH" "$AUTH_URL" "$API_DIR"
 else
-  echo \\"Updating backend repo (branch: $BRANCH)...\\"
-  cd \\"$API_DIR\\"
-  git config --global --add safe.directory \\"$API_DIR\\" || true
-  git remote set-url origin \\"$AUTH_URL\\" || true
+  echo "Updating backend repo (branch: $BRANCH)..."
+  cd "$API_DIR"
+  git config --global --add safe.directory "$API_DIR" || true
+  git remote set-url origin "$AUTH_URL" || true
   git fetch --all --prune
-  git checkout \\"$BRANCH\\" || git checkout -b \\"$BRANCH\\" \\"origin/$BRANCH\\"
-  git pull origin \\"$BRANCH\\" || {
-    echo \\"Pull failed, resetting...\\"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git pull origin "$BRANCH" || {
+    echo "Pull failed, resetting..."
     git fetch --all
-    git reset --hard \\"origin/$BRANCH\\"
+    git reset --hard "origin/$BRANCH"
   }
 fi
 
-cd \\"$API_DIR\\"
-echo \\"Backend SHA: $(git rev-parse --short HEAD)\\"
+cd "$API_DIR"
+echo "Backend SHA: $(git rev-parse --short HEAD)"
 SCRIPT
-"''')
+''')
                     }
                 }
             }
@@ -185,16 +229,17 @@ SCRIPT
                     script {
                         def bn = (env.BUILD_NUMBER ?: "${currentBuild.number}").toString()
 
+                        // Use a bash script file (shebang) to avoid /bin/sh expansion surprises
                         def sha = sh(
                             label: 'Read backend SHA from EC2',
-                            script: """bash -lc '
+                            script: """#!/usr/bin/env bash
 set -euo pipefail
 ssh -o StrictHostKeyChecking=no \\
     -o PreferredAuthentications=publickey \\
     -o PubkeyAuthentication=yes \\
-    "${env.EC2_USER}@${env.EC2_HOST}" \\
-    "cd ${env.API_DIR} && git rev-parse --short HEAD | tr -d \\\\r"
-'""",
+    "${params.EC2_USER}@${env.EC2_HOST_EFFECTIVE}" \\
+    "cd ${params.API_DIR} && git rev-parse --short HEAD | tr -d \\\\r"
+""",
                             returnStdout: true
                         ).trim()
 
@@ -223,33 +268,37 @@ ssh -o StrictHostKeyChecking=no \\
             }
             steps {
                 sshagent(credentials: ["${env.EC2_SSH_CRED}"]) {
-                    sh(label: 'Build images', script: '''bash -lc "
+                    sh(label: 'Build images', script: '''#!/usr/bin/env bash
 set -euo pipefail
 
-: \\"${BACKEND_TAG:?BACKEND_TAG missing}\\"
+: "${EC2_HOST_EFFECTIVE:?EC2_HOST is required}"
+: "${EC2_USER:?EC2_USER is required}"
+: "${BACKEND_TAG:?BACKEND_TAG missing}"
+: "${API_DIR:?API_DIR missing}"
+: "${MINIKUBE_PROFILE:=minikube}"
 
-ssh -o StrictHostKeyChecking=no \\
-    -o PreferredAuthentications=publickey \\
-    -o PubkeyAuthentication=yes \\
-    \\"${EC2_USER}@${EC2_HOST}\\" \\
-    \\"API_DIR=\\\\\\"${API_DIR}\\\\\\" MINIKUBE_PROFILE=\\\\\\"${MINIKUBE_PROFILE}\\\\\\" BACKEND_TAG=\\\\\\"${BACKEND_TAG}\\\\\\" bash -s\\" <<'SCRIPT'
+ssh -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=publickey \
+    -o PubkeyAuthentication=yes \
+    "${EC2_USER}@${EC2_HOST_EFFECTIVE}" \
+    "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BACKEND_TAG='${BACKEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
-: \\"${API_DIR:?API_DIR missing}\\"
-: \\"${MINIKUBE_PROFILE:=minikube}\\"
-: \\"${BACKEND_TAG:?BACKEND_TAG missing}\\"
+: "${API_DIR:?API_DIR missing}"
+: "${MINIKUBE_PROFILE:=minikube}"
+: "${BACKEND_TAG:?BACKEND_TAG missing}"
 
-cd \\"$API_DIR\\"
+cd "$API_DIR"
 
-eval \\"$(minikube -p \\"${MINIKUBE_PROFILE}\\" docker-env)\\"
-echo \\"Building tag: ${BACKEND_TAG}\\"
+eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
+echo "Building tag: ${BACKEND_TAG}"
 
 cleanup_repo() {
-  local repo=\\"$1\\"
-  docker images \\"$repo\\" --format \\"{{.Repository}}:{{.Tag}}\\" \\
-    | grep \\"^${repo}:\\" \\
-    | grep -v \\":latest$\\\" \\
-    | grep -v \\":${BACKEND_TAG}$\\\" \\
+  local repo="$1"
+  docker images "$repo" --format "{{.Repository}}:{{.Tag}}" \
+    | grep "^${repo}:" \
+    | grep -v ":latest$" \
+    | grep -v ":${BACKEND_TAG}$" \
     | xargs -r docker rmi -f || true
 }
 
@@ -261,16 +310,16 @@ cleanup_repo postgres-db
 
 docker image prune -f || true
 
-docker build -t \\"backend-service:${BACKEND_TAG}\\"    -f backend/Dockerfile     backend/
-docker build -t \\"stack-service:${BACKEND_TAG}\\"      -f stack/Dockerfile       ./
-docker build -t \\"linkedlist-service:${BACKEND_TAG}\\" -f linkedlist/Dockerfile  ./
-docker build -t \\"graph-service:${BACKEND_TAG}\\"      -f graph/Dockerfile       ./
-docker build -t \\"postgres-db:${BACKEND_TAG}\\"        -f database/Dockerfile    ./
+docker build -t "backend-service:${BACKEND_TAG}"    -f backend/Dockerfile     backend/
+docker build -t "stack-service:${BACKEND_TAG}"      -f stack/Dockerfile       ./
+docker build -t "linkedlist-service:${BACKEND_TAG}" -f linkedlist/Dockerfile  ./
+docker build -t "graph-service:${BACKEND_TAG}"      -f graph/Dockerfile       ./
+docker build -t "postgres-db:${BACKEND_TAG}"        -f database/Dockerfile    ./
 
-echo \\"Images built:\\"
+echo "Images built:"
 docker images | grep -E '^(backend-service|stack-service|linkedlist-service|graph-service|postgres-db)[[:space:]]' || true
 SCRIPT
-"''')
+''')
                 }
             }
         }
@@ -278,39 +327,44 @@ SCRIPT
         stage('Deploy to Kubernetes on EC2') {
             steps {
                 sshagent(credentials: ["${env.EC2_SSH_CRED}"]) {
-                    sh(label: 'Deploy', script: '''bash -lc "
+                    sh(label: 'Deploy', script: '''#!/usr/bin/env bash
 set -euo pipefail
 
-: \\"${BACKEND_TAG:?BACKEND_TAG missing}\\"
+: "${EC2_HOST_EFFECTIVE:?EC2_HOST is required}"
+: "${EC2_USER:?EC2_USER is required}"
+: "${BACKEND_TAG:?BACKEND_TAG missing}"
+: "${REPO_DIR:?REPO_DIR missing}"
+: "${API_DIR:?API_DIR missing}"
+: "${MINIKUBE_PROFILE:=minikube}"
 
-ssh -o StrictHostKeyChecking=no \\
-    -o PreferredAuthentications=publickey \\
-    -o PubkeyAuthentication=yes \\
-    \\"${EC2_USER}@${EC2_HOST}\\" \\
-    \\"REPO_DIR=\\\\\\"${REPO_DIR}\\\\\\" API_DIR=\\\\\\"${API_DIR}\\\\\\" MINIKUBE_PROFILE=\\\\\\"${MINIKUBE_PROFILE}\\\\\\" BACKEND_TAG=\\\\\\"${BACKEND_TAG}\\\\\\" bash -s\\" <<'SCRIPT'
+ssh -o StrictHostKeyChecking=no \
+    -o PreferredAuthentications=publickey \
+    -o PubkeyAuthentication=yes \
+    "${EC2_USER}@${EC2_HOST_EFFECTIVE}" \
+    "REPO_DIR='${REPO_DIR}' API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BACKEND_TAG='${BACKEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
-: \\"${REPO_DIR:?REPO_DIR missing}\\"
-: \\"${API_DIR:?API_DIR missing}\\"
-: \\"${MINIKUBE_PROFILE:=minikube}\\"
-: \\"${BACKEND_TAG:?BACKEND_TAG missing}\\"
+: "${REPO_DIR:?REPO_DIR missing}"
+: "${API_DIR:?API_DIR missing}"
+: "${MINIKUBE_PROFILE:=minikube}"
+: "${BACKEND_TAG:?BACKEND_TAG missing}"
 
-eval \\"$(minikube -p \\"${MINIKUBE_PROFILE}\\" docker-env)\\"
+eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-cd \\"$REPO_DIR\\"
-echo \\"Deploying tag ${BACKEND_TAG}...\\"
+cd "$REPO_DIR"
+echo "Deploying tag ${BACKEND_TAG}..."
 
 if [ -d devops-infra/k8s/backend ]; then
-  find devops-infra/k8s/backend -type f -name '*.yaml' -print0 \\
-    | xargs -0 -I{} bash -lc "sed \\"s|IMAGE_TAG|${BACKEND_TAG}|g\\" {}" \\
+  find devops-infra/k8s/backend -type f -name '*.yaml' -print0 \
+    | xargs -0 -I{} bash -lc "sed \"s|IMAGE_TAG|${BACKEND_TAG}|g\" {}" \
     | kubectl apply -f -
 else
-  echo \\"WARNING: devops-infra/k8s/backend not found. Skipping kubectl apply.\\"
+  echo "WARNING: devops-infra/k8s/backend not found. Skipping kubectl apply."
 fi
 
 kubectl get pods -A | head -n 50 || true
 SCRIPT
-"''')
+''')
                 }
             }
         }

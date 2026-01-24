@@ -38,6 +38,11 @@ jenkins:
   remotingSecurity:
     enabled: true
 
+  # CSRF Protection Configuration - Allow remote build triggers
+  crumbIssuer:
+    standard:
+      excludeClientIPFromCrumb: true
+
   globalNodeProperties:
     - envVars:
         env:
@@ -97,11 +102,16 @@ security:
       - global:
           strategy: triggeringUsersAuthorizationStrategy
 
+  # Additional security option to exempt authentication tokens from CSRF
+  apiToken:
+    creationOfLegacyTokenEnabled: false
+    tokenGenerationOnCreationEnabled: false
+    usageStatisticsEnabled: true
+
 credentials:
   system:
     domainCredentials:
       - credentials:
-          # Generic GitHub credential used by JCasC jobs (Job DSL)
           - usernamePassword:
               scope: GLOBAL
               id: "github-credentials"
@@ -109,8 +119,6 @@ credentials:
               password: "${GITHUB_TOKEN:-admin123}"
               description: "GitHub credentials for repository access"
 
-          # These 3 match your pipelines (as you named them in Jenkinsfile.backend)
-          # If you already created them in Jenkins UI, keep the IDs identical and remove these from JCasC.
           - usernamePassword:
               scope: GLOBAL
               id: "github-pat-token"
@@ -141,18 +149,11 @@ credentials:
 
 jobs:
   - script: >
-      // ==========================================================
-      // CloudRift pipelines:
-      // - All Jenkinsfiles are stored in CloudRift-devops
-      // - Each repo triggers only its own pipeline via remote token
-      // ==========================================================
-
       folder('CloudRift') {
         displayName('CloudRift')
         description('CloudRift CI/CD jobs (triggered by GitHub webhooks)')
       }
 
-      // FRONTEND PIPELINE (Triggered by CloudRift-frontend webhook)
       pipelineJob('CloudRift/frontend-pipeline') {
         displayName('Frontend CI/CD Pipeline')
         description('Frontend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
@@ -171,10 +172,8 @@ jobs:
             }
           }
         }
-        // DO NOT add githubPush() here; SCM is devops and would trigger on devops pushes.
       }
 
-      // BACKEND PIPELINE (Triggered by CloudRift-backend webhook)
       pipelineJob('CloudRift/backend-pipeline') {
         displayName('Backend CI/CD Pipeline')
         description('Backend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
@@ -195,7 +194,6 @@ jobs:
         }
       }
 
-      // DEVOPS PIPELINE (Triggered by CloudRift-devops webhook)
       pipelineJob('CloudRift/devops-pipeline') {
         displayName('DevOps Pipeline')
         description('DevOps pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')

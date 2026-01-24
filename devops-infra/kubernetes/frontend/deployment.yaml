@@ -1,8 +1,5 @@
 # Frontend Deployment
-# Purpose: reduce health-check traffic while keeping correct Kubernetes behavior.
-# - readinessProbe: every 30s (service routing)
-# - livenessProbe: every 60s (restart decision)
-# - startupProbe: avoids premature restarts during cold start/build/asset load
+# Enhanced deployment with resource limits, probes, and environment configuration
 
 apiVersion: apps/v1
 kind: Deployment
@@ -26,66 +23,41 @@ spec:
       labels:
         app: frontend
         tier: web
-      annotations:
-        # Keep these only if your frontend actually exposes Prometheus metrics.
-        # If it does NOT expose /metrics, set prometheus.io/scrape to "false" or remove these.
-        prometheus.io/scrape: "false"
-        prometheus.io/port: "80"
-        prometheus.io/path: "/metrics"
     spec:
       containers:
-        - name: frontend
-          # Replace with your real image (e.g., ACR/ECR/DockerHub)
-          image: frontend-service:latest
-          imagePullPolicy: Always
-
-          ports:
-            - containerPort: 80
-              name: http
-
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "64Mi"
-            limits:
-              cpu: "200m"
-              memory: "256Mi"
-
-          # If your frontend is a static NGINX site, use "/" (or "/index.html") for checks.
-          # If your app has a dedicated endpoint, use "/health" or "/healthz".
-          startupProbe:
-            httpGet:
-              path: /
-              port: 80
-            # 30 * 10s = up to 5 minutes allowed for startup
-            failureThreshold: 30
-            periodSeconds: 10
-            timeoutSeconds: 3
-
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 30
-            periodSeconds: 60
-            timeoutSeconds: 5
-            failureThreshold: 3
-
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 10
-            periodSeconds: 30
-            timeoutSeconds: 3
-            failureThreshold: 3
-
-          env:
-            # Optional: if you have a backend API endpoint the frontend calls.
-            # Adjust/remove as needed.
-            - name: BACKEND_BASE_URL
-              value: "http://backend-service:5000"
-
-            # Optional: if your frontend runtime uses a PORT env var.
-            - name: PORT
-              value: "80"
+      - name: frontend
+        # DYNAMIC TAGGING: Uses env var set by Jenkins
+        image: ui-service:$(FRONTEND_TAG)
+        imagePullPolicy: Always  # Force pull new tag (changed from Never)
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "100m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          failureThreshold: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+        env:
+        - name: API_URL
+          value: "http://backend-service:5000/api"
+        # NEW: Frontend tag env var - injected by Jenkins
+        - name: FRONTEND_TAG
+          value: "latest"

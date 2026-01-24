@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'DEVOPS_REPO_URL', defaultValue: 'https://github.com/AlexBoyev/CloudRift-devops.git', description: 'DevOps repo URL')
+        string(name: 'MINIKUBE_PROFILE', defaultValue: 'minikube', description: 'Minikube profile name')
+    }
+
+    environment {
+        GITHUB_PAT       = credentials('github-pat-token')
+        EC2_USER         = 'ubuntu'
+        EC2_HOST         = credentials('ec2-host-ip')
+
+        REPO_DIR         = '/home/ubuntu/new-devops-local'
+        DEVOPS_REPO_URL  = "${params.DEVOPS_REPO_URL}"
+        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+    }
+
+    stages {
+        stage('Sync DevOps Repo on EC2') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+FULL_URL="$(normalize_url "$DEVOPS_REPO")"
+TOKEN="${GITHUB_PAT}"
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  git -c http.extraHeader="$AUTH_HEADER" clone "$FULL_URL" "$REPO_DIR"
+else
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR"
+  git fetch --all
+  git reset --hard origin/main
+fi
+
+cd "$REPO_DIR"
+echo "DevOps commit: $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+            }
+        }
+
+        stage('Apply Manifests') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            set -e
+                            cd ${REPO_DIR}
+                            kubectl config use-context ${MINIKUBE_PROFILE} || true
+
+                            # Apply everything you consider 'devops-owned' (adjust paths)
+                            kubectl apply -f devops-infra/kubernetes/ || true
+
+                            kubectl get pods -A || true
+                        "
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success { echo "SUCCESS: devops pipeline" }
+        failure { echo "FAILED: devops pipeline" }
+    }
+}

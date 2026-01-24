@@ -17,14 +17,14 @@ pipeline {
     environment {
         BRANCH_NAME      = "${params.BRANCH_NAME ?: 'main'}"
 
-        // Username/Password credential (token is in *_PSW)
+        // Must be Username/Password credential; token is in *_PSW
         GITHUB_PAT       = credentials('github-pat-token')
 
         // SSH Username with private key credential
         EC2_SSH_KEY      = credentials('ec2-ssh-key')
 
         EC2_USER         = 'ubuntu'
-        // Secret text credential containing only host/dns/ip
+        // Secret text credential containing only host/dns/ip (no protocol, no port)
         EC2_HOST         = credentials('ec2-host-ip')
 
         API_DIR          = '/home/ubuntu/new-backend'
@@ -43,11 +43,11 @@ pipeline {
         stage('Sync DevOps Repo on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
-                    // IMPORTANT: force bash locally
                     sh(label: 'Sync DevOps repo', script: '''bash -lc '
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  "${EC2_USER}@${EC2_HOST}" \
   "GITHUB_PAT=\\"${GITHUB_PAT_PSW}\\" DEVOPS_REPO=\\"${DEVOPS_REPO_URL}\\" REPO_DIR=\\"${REPO_DIR}\\" bash -s" <<'"'"'SCRIPT'"'"'
 set -euo pipefail
 
@@ -94,10 +94,12 @@ SCRIPT
         stage('Sync Backend Repo on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
+
                     sh(label: 'Sync backend repo', script: '''bash -lc '
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  "${EC2_USER}@${EC2_HOST}" \
   "BRANCH=\\"${BRANCH_NAME}\\" GITHUB_PAT=\\"${GITHUB_PAT_PSW}\\" API_REPO=\\"${API_REPO_URL}\\" API_DIR=\\"${API_DIR}\\" bash -s" <<'"'"'SCRIPT'"'"'
 set -euo pipefail
 : "${BRANCH:=main}"
@@ -144,22 +146,23 @@ cd "$API_DIR"
 echo "Backend SHA: $(git rev-parse --short HEAD)"
 SCRIPT
 ' ''')
-                }
 
-                // compute tag (also force bash locally)
-                script {
-                    def sha = sh(
-                        script: '''bash -lc '
+                    // IMPORTANT: must run while sshagent is active, otherwise you get "Permission denied (publickey)"
+                    script {
+                        def sha = sh(
+                            script: '''bash -lc '
 set -euo pipefail
-ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  "${EC2_USER}@${EC2_HOST}" \
   "cd ${API_DIR} && git rev-parse --short HEAD"
 ' ''',
-                        returnStdout: true
-                    ).trim()
+                            returnStdout: true
+                        ).trim()
 
-                    env.BACKEND_SHA = sha
-                    env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
-                    echo "Using BACKEND_TAG=${env.BACKEND_TAG}"
+                        env.BACKEND_SHA = sha
+                        env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
+                        echo "Using BACKEND_TAG=${env.BACKEND_TAG}"
+                    }
                 }
             }
         }
@@ -174,7 +177,8 @@ ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
                     sh(label: 'Build images', script: '''bash -lc '
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  "${EC2_USER}@${EC2_HOST}" \
   "API_DIR=\\"${API_DIR}\\" MINIKUBE_PROFILE=\\"${MINIKUBE_PROFILE}\\" BACKEND_TAG=\\"${BACKEND_TAG}\\" bash -s" <<'"'"'SCRIPT'"'"'
 set -euo pipefail
 cd "$API_DIR"
@@ -218,13 +222,14 @@ SCRIPT
                     sh(label: 'Deploy', script: '''bash -lc '
 set -euo pipefail
 
-ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" "
+ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes \
+  "${EC2_USER}@${EC2_HOST}" "
   set -e
   cd ${REPO_DIR}
   kubectl config use-context ${MINIKUBE_PROFILE} || true
 
-  kubectl apply -f devops-infra/kubernetes/database/secret.yaml || true
-  kubectl apply -f devops-infra/kubernetes/database/service.yaml || true
+  kubectl apply -f devops-infra/kubernetes/database/secret.yaml      || true
+  kubectl apply -f devops-infra/kubernetes/database/service.yaml     || true
   kubectl apply -f devops-infra/kubernetes/database/statefulset.yaml || true
 
   kubectl apply -f devops-infra/kubernetes/backend/configmap.yaml   || true
@@ -252,7 +257,11 @@ ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" "
     }
 
     post {
-        success { echo "SUCCESS: BACKEND_TAG=${BACKEND_TAG} BACKEND_SHA=${BACKEND_SHA}" }
-        failure { echo "FAILED: backend pipeline" }
+        success {
+            echo "SUCCESS: BACKEND_TAG=${BACKEND_TAG} BACKEND_SHA=${BACKEND_SHA}"
+        }
+        failure {
+            echo "FAILED: backend pipeline"
+        }
     }
 }

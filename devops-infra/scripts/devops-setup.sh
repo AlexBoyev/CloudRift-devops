@@ -2,6 +2,12 @@
 # DevOps Infrastructure Setup Script - FIXED & COMPLETE
 # Complete one-click deployment for AKS Data Structures Platform
 # This script handles the full deployment after AWS infrastructure is ready
+#
+# FULL FIX (persistence):
+#  1) Removed: docker system prune -af --volumes   (this was wiping Minikube/Postgres data)
+#  2) Added:   durable Postgres directory on EC2: /opt/cloudrift/postgres-data
+#  3) Added:   apply database/pvc.yaml BEFORE database/ (so PV/PVC bind before StatefulSet)
+#  4) Added:   same durable directory + pvc.yaml apply in systemd start-cloudrift.sh
 
 set -euo pipefail
 
@@ -52,6 +58,7 @@ SKIP_BUILD="${4:-false}"
 # stripping Windows carriage returns (\r) to prevent syntax errors
 if [ -f "/home/${USER}/.env" ]; then
     log "Loading environment variables from /home/${USER}/.env..."
+    # shellcheck disable=SC2046
     export $(grep -v '^#' "/home/${USER}/.env" | sed 's/\r$//' | xargs)
 fi
 
@@ -81,7 +88,6 @@ echo "  API_REPO_URL:      $API_REPO_URL"
 echo "  FRONTEND_REPO_URL: $FRONTEND_REPO_URL"
 echo ""
 
-# -----------------------------
 # -----------------------------
 # Detect environment (EC2 vs local)
 # -----------------------------
@@ -195,9 +201,26 @@ sudo apt-get autoremove -y || true
 sudo rm -rf /var/lib/apt/lists/* || true
 log "Cleaning Docker (safe on fresh EC2)..."
 sudo systemctl start docker >/dev/null 2>&1 || true
-sudo docker system prune -af --volumes || true
+
+# =============================
+# FIX: DO NOT PRUNE VOLUMES
+# =============================
+# This was the main reason your DB got wiped after "reset".
+# Old: sudo docker system prune -af --volumes || true
+sudo docker system prune -af || true
+
 log "Disk space after cleanup:"
 df -h /
+
+# =============================
+# FIX: Ensure durable Postgres dir exists (EC2)
+# This must match the hostPath used by your PV (pvc.yaml updated accordingly).
+# =============================
+if [ "$EC2_ENV" = true ]; then
+  log "Ensuring durable Postgres directory exists at /opt/cloudrift/postgres-data ..."
+  sudo mkdir -p /opt/cloudrift/postgres-data || true
+  sudo chmod 777 /opt/cloudrift/postgres-data || true
+fi
 
 
 if [ "$EC2_ENV" = true ]; then
@@ -535,9 +558,19 @@ kubectl apply -f "$DEVOPS_INFRA/kubernetes/backend/secret.yaml"
 
 # 2. Deploy Database (The Foundation)
 log "Deploying Database..."
-kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/"
+# =============================
+# FIX: Apply DB resources explicitly (order matters for persistence)
+#  - pvc.yaml creates/binds PV+PVC (static hostPath: /opt/cloudrift/postgres-data)
+#  - secret.yaml provides credentials
+#  - service.yaml creates headless + ClusterIP services
+#  - statefulset.yaml mounts the fixed PVC (postgres-pvc)
+# =============================
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/pvc.yaml"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/secret.yaml"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/service.yaml"
+kubectl apply -f "$DEVOPS_INFRA/kubernetes/database/statefulset.yaml"
 # Wait for the database pod to be ready based on its readinessProbe (pg_isready)
-kubectl rollout status statefulset/postgres-db --timeout=120s
+kubectl rollout status statefulset/postgres-db --timeout=180s
 print_status "Database is online and ready"
 
 # 3. Deploy Data Structure Services
@@ -695,13 +728,26 @@ sudo systemctl start docker >/dev/null 2>&1 || true
 sudo mkdir -p /home/ubuntu/.kube /home/ubuntu/.minikube
 sudo chown -R ubuntu:ubuntu /home/ubuntu/.kube /home/ubuntu/.minikube
 
+# =============================
+# FIX: durable Postgres hostPath directory (matches PV hostPath)
+# =============================
+sudo mkdir -p /opt/cloudrift/postgres-data || true
+sudo chmod 777 /opt/cloudrift/postgres-data || true
+
 # 2. Start Minikube (Idempotent)
 run_u "minikube status --profile='${PROFILE}' >/dev/null 2>&1 || minikube start --profile='${PROFILE}' --driver='${DRIVER}' --memory=4096mb --cpus=2"
 
 # 3. Apply Manifests
 run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; kubectl config use-context '${PROFILE}' >/dev/null 2>&1 || true"
+
+# =============================
+# FIX: Apply DB manifests explicitly in safe order on every boot
+# =============================
 run_u "export KUBECONFIG='${KUBECONFIG_PATH}'; \
-       kubectl apply -f '${K8S_PATH}/database/' || true; \
+       kubectl apply -f '${K8S_PATH}/database/pvc.yaml' || true; \
+       kubectl apply -f '${K8S_PATH}/database/secret.yaml' || true; \
+       kubectl apply -f '${K8S_PATH}/database/service.yaml' || true; \
+       kubectl apply -f '${K8S_PATH}/database/statefulset.yaml' || true; \
        kubectl apply -f '${K8S_PATH}/backend/'  || true; \
        kubectl apply -f '${K8S_PATH}/data-structures/' || true; \
        kubectl apply -f '${K8S_PATH}/frontend/' || true; \

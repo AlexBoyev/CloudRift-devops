@@ -1,5 +1,22 @@
-# Database Persistent Volume Claim
-# Standalone PVC for database storage (if not using StatefulSet volumeClaimTemplates)
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: postgres-pv
+  labels:
+    app: postgres
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: manual
+  persistentVolumeReclaimPolicy: Retain
+  volumeMode: Filesystem
+  hostPath:
+    path: /opt/cloudrift/postgres-data
+    type: DirectoryOrCreate
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -9,8 +26,8 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: manual
+  volumeName: postgres-pv
   resources:
     requests:
       storage: 10Gi
-  # Uncomment and specify storageClassName for production
-  # storageClassName: gp2

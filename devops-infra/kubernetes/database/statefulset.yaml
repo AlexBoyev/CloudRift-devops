@@ -1,5 +1,3 @@
-# Database StatefulSet
-# PostgreSQL database with persistent storage
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -19,6 +17,8 @@ spec:
         app: postgres
         tier: database
     spec:
+      securityContext:
+        fsGroup: 999
       containers:
       - name: postgres
         image: postgres-db:latest
@@ -57,9 +57,9 @@ spec:
         livenessProbe:
           exec:
             command:
-            - pg_isready
-            - -U
-            - appuser
+              - sh
+              - -c
+              - "pg_isready -U \"$POSTGRES_USER\""
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -67,18 +67,14 @@ spec:
         readinessProbe:
           exec:
             command:
-            - pg_isready
-            - -U
-            - appuser
+              - sh
+              - -c
+              - "pg_isready -U \"$POSTGRES_USER\""
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
-  volumeClaimTemplates:
-  - metadata:
-      name: postgres-storage
-    spec:
-      accessModes: ["ReadWriteOnce"]
-      resources:
-        requests:
-          storage: 10Gi
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc

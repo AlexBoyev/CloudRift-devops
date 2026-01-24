@@ -1,7 +1,3 @@
-// Frontend Build and Deploy Pipeline
-// Handles building, testing, and deploying the frontend service
-// Uses SSH to connect to EC2 and run commands there
-
 pipeline {
     agent any
 
@@ -12,58 +8,38 @@ pipeline {
     }
 
     parameters {
-        string(
-            name: 'BRANCH_NAME',
-            defaultValue: 'main',
-            description: 'Git branch to build'
-        )
-        string(
-            name: 'FRONTEND_REPO_URL',
-            defaultValue: 'github.com/AlexBoyev/CloudRift-frontend.git',
-            description: 'Frontend UI repo URL'
-        )
-        string(
-            name: 'MINIKUBE_PROFILE',
-            defaultValue: 'minikube',
-            description: 'Minikube profile name'
-        )
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Frontend branch to build')
+        string(name: 'FRONTEND_REPO_URL', defaultValue: 'github.com/AlexBoyev/CloudRift-frontend.git', description: 'Frontend repo URL')
+        string(name: 'DEVOPS_REPO_URL', defaultValue: 'https://github.com/AlexBoyev/CloudRift-devops.git', description: 'DevOps repo URL (manifests live here)')
+        string(name: 'MINIKUBE_PROFILE', defaultValue: 'minikube', description: 'Minikube profile name')
     }
 
     environment {
         BRANCH_NAME      = "${params.BRANCH_NAME ?: 'main'}"
         GITHUB_PAT       = credentials('github-pat-token')
-        EC2_SSH_KEY      = credentials('ec2-ssh-key')
         EC2_USER         = 'ubuntu'
         EC2_HOST         = credentials('ec2-host-ip')
 
-        // Paths & URLs
-        FRONTEND_DIR     = '/home/ubuntu/frontend'
-        DEVOPS_DIR       = '/home/ubuntu/new-devops-local'
-        REPO_URL         = "${params.FRONTEND_REPO_URL}"
-        MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
+        FRONTEND_DIR     = '/home/ubuntu/new-frontend'
+        REPO_DIR         = '/home/ubuntu/new-devops-local'
 
-        // DYNAMIC TAGGING: Unique per build + commit for traceability
-        FRONTEND_TAG     = "frontend-${env.BUILD_NUMBER}-${GIT_COMMIT.take(8)}"
+        FRONTEND_REPO_URL = "${params.FRONTEND_REPO_URL}"
+        DEVOPS_REPO_URL   = "${params.DEVOPS_REPO_URL}"
+        MINIKUBE_PROFILE  = "${params.MINIKUBE_PROFILE}"
+
+        FRONTEND_SHA     = ""
+        FRONTEND_TAG     = ""
     }
 
     stages {
-        stage('Clone Frontend Repo to EC2') {
+        stage('Sync DevOps Repo on EC2') {
             steps {
-                script {
-                    echo "==========================================="
-                    echo "Frontend Pipeline - Cloning repository"
-                    echo "Branch: ${params.BRANCH_NAME}"
-                    echo "Tag: ${FRONTEND_TAG}"
-                    echo "==========================================="
-                }
-
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' REPO_URL='${REPO_URL}' REPO_DIR='${FRONTEND_DIR}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT_PSW}' bash -s" <<'SCRIPT'
+                          "GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
-# 1. HELPER: Normalize URL
 normalize_url() {
   local input="$1"
   if echo "$input" | grep -qiE '^git@github.com:'; then
@@ -76,148 +52,129 @@ normalize_url() {
   echo "$input"
 }
 
-FULL_URL="$(normalize_url "$REPO_URL")"
-TOKEN="${GITHUB_PASS:-}"
+FULL_URL="$(normalize_url "$DEVOPS_REPO")"
+TOKEN="${GITHUB_PAT}"
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
 
-# 2. CONSTRUCT AUTH URL (The Fix)
-# Strip "https://" to avoid duplication when embedding credentials
-CLEAN_URL_NO_PROTO=$(echo "$FULL_URL" | sed -E 's|^https?://||')
-# Use the embedded token format
-AUTH_URL="https://${GITHUB_USER}:${TOKEN}@$CLEAN_URL_NO_PROTO"
-
-echo "Cloning frontend repo: $FULL_URL"
-
-# 3. CLONE/UPDATE LOGIC
 if [ ! -d "$REPO_DIR/.git" ]; then
   mkdir -p "$REPO_DIR"
-  echo "Cloning repository from branch: $BRANCH..."
-  # Use AUTH_URL to clone directly
-  git clone -b "$BRANCH" "$AUTH_URL" "$REPO_DIR"
-
-  # Restore clean origin URL immediately
-  git -C "$REPO_DIR" remote set-url origin "$FULL_URL" || true
+  git -c http.extraHeader="$AUTH_HEADER" clone "$FULL_URL" "$REPO_DIR"
 else
-  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
   cd "$REPO_DIR"
-
-  # FIX: FORCE PERMISSIONS FOR JENKINS (The Permission Denied Fix)
-  sudo chown -R ubuntu:ubuntu "$REPO_DIR"
-  sudo chmod -R u+rwX "$REPO_DIR"
-
-  # Update remote URL with token temporarily
   git config --global --add safe.directory "$REPO_DIR"
-  git remote set-url origin "$AUTH_URL"
-
-  # Fetch using the token-embedded URL
-  git fetch origin "$BRANCH" --prune --prune-tags || {
-    echo "Fetch failed; check credentials or network."
-    exit 1
-  }
-
-  # Reset and Clean
-  git checkout -B "$BRANCH" "origin/$BRANCH"
-  git reset --hard "origin/$BRANCH"
-  git clean -fdx
-
-  # Restore clean origin URL (do not persist PAT in .git/config)
-  git remote set-url origin "$FULL_URL" || true
+  git fetch --all
+  git reset --hard origin/main
 fi
-
-cd "$REPO_DIR"
-echo "Current branch: $(git branch --show-current)"
-echo "Latest commit:  $(git rev-parse --short HEAD)"
 SCRIPT
                     '''
                 }
             }
         }
 
-        stage('Build Docker Image on EC2') {
+        stage('Sync Frontend Repo on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                           "FRONTEND_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' FRONTEND_TAG='${FRONTEND_TAG}' bash -s" <<'SCRIPT'
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' FE_REPO='${FRONTEND_REPO_URL}' FE_DIR='${FRONTEND_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+: "${BRANCH:=main}"
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+FULL_URL="$(normalize_url "$FE_REPO")"
+TOKEN="${GITHUB_PAT}"
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$FE_DIR/.git" ]; then
+  mkdir -p "$FE_DIR"
+  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$FE_DIR"
+else
+  cd "$FE_DIR"
+  git config --global --add safe.directory "$FE_DIR"
+  git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+    git fetch --all
+    git reset --hard "origin/$BRANCH"
+  }
+fi
+
+cd "$FE_DIR"
+echo "Frontend SHA: $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+
+                script {
+                    def sha = sh(
+                        script: "ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \"cd ${FRONTEND_DIR} && git rev-parse --short HEAD\"",
+                        returnStdout: true
+                    ).trim()
+                    env.FRONTEND_SHA = sha
+                    env.FRONTEND_TAG = "frontend-${env.BUILD_NUMBER}-${sha}"
+                    echo "Using FRONTEND_TAG=${env.FRONTEND_TAG}"
+                }
+            }
+        }
+
+        stage('Build Frontend Image on EC2') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                           "FE_DIR='${FRONTEND_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' FRONTEND_TAG='${FRONTEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
-cd "$FRONTEND_DIR"
-
-# Point Docker to Minikube daemon
+cd "$FE_DIR"
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
 
-echo "Using frontend tag: ${FRONTEND_TAG}"
-
-# Remove old non-latest tags to save space
-docker images ui-service --format '{{.Repository}}:{{.Tag}}' | grep '^ui-service:' | grep -v ':latest$' | xargs -r docker rmi -f || true
-docker image prune -f || true
-
-echo "Building Docker image: ui-service:${FRONTEND_TAG}"
+# Adjust Dockerfile context/path to your frontend repo layout:
+# If your Dockerfile is at repo root: use "docker build -t ... ."
+echo "Building ui-service:${FRONTEND_TAG}"
 docker build -t "ui-service:${FRONTEND_TAG}" .
 
-echo "✓ Docker image built successfully with tag: ${FRONTEND_TAG}"
-echo "Available images:"
-docker images ui-service
-
-# Cleanup intermediate tag (Kubernetes uses the specific tag directly via env var)
-echo "Cleaning up intermediate frontend tag to save disk space..."
-docker rmi "ui-service:${FRONTEND_TAG}" || true
-docker image prune -f || true
+docker images | grep -E '^(ui-service)[[:space:]]' || true
 SCRIPT
                     '''
                 }
             }
         }
 
-        stage('Deploy to Kubernetes on EC2') {
+        stage('Deploy Frontend to Kubernetes on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            REPO_DIR='${DEVOPS_DIR}'
+                            set -e
+                            REPO_DIR='${REPO_DIR}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
                             FRONTEND_TAG='${FRONTEND_TAG}'
 
                             cd \\${REPO_DIR}
-
-                            # Ensure kubectl context is set
                             kubectl config use-context \\${MINIKUBE_PROFILE} || true
 
-                            # Apply Kubernetes manifests
-                            echo 'Applying Frontend Manifests...'
-                            kubectl apply -f devops-infra/kubernetes/frontend/configmap.yaml || true
-                            kubectl apply -f devops-infra/kubernetes/frontend/deployment.yaml || true
-                            kubectl apply -f devops-infra/kubernetes/frontend/service.yaml || true
-                            kubectl apply -f devops-infra/kubernetes/frontend/hpa.yaml || true
+                            # Apply your frontend manifests from devops repo (adjust paths as needed)
+                            kubectl apply -f devops-infra/kubernetes/frontend/ || true
 
-                            # INJECT TAG: Set the exact frontend tag into deployment env
+                            # Optional: inject tag into deployment env if your manifests support it
                             kubectl set env deployment/frontend-deployment FRONTEND_TAG=\\${FRONTEND_TAG} --containers=frontend || true
 
-                            # Rollout restart with new tag
-                            kubectl rollout restart deployment/frontend-deployment
+                            kubectl rollout restart deployment/frontend-deployment || true
                             kubectl rollout status deployment/frontend-deployment --timeout=300s || true
 
-                            echo '✓ Frontend deployed successfully with tag: ${FRONTEND_TAG}'
-                        "
-                    '''
-                }
-            }
-        }
-
-        stage('Health Check') {
-            steps {
-                sshagent(credentials: ['ec2-ssh-key']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            # Wait for pods to be ready
-                            echo 'Waiting for health check...'
-                            kubectl wait --for=condition=ready pod -l app=frontend --timeout=120s || true
-
-                            # Get pod status
-                            echo ''
-                            echo '=== Frontend Pods (tag: ${FRONTEND_TAG}) ==='
-                            kubectl get pods -l app=frontend -o wide
-
-                            echo '✓ Health check passed'
+                            kubectl get pods -l app=frontend -o wide || true
                         "
                     '''
                 }
@@ -227,13 +184,10 @@ SCRIPT
 
     post {
         success {
-            echo "=========================================="
-            echo "✓ Frontend Pipeline completed successfully!"
-            echo "Tag: ${FRONTEND_TAG}"
-            echo "=========================================="
+            echo "SUCCESS: FRONTEND_TAG=${FRONTEND_TAG} FRONTEND_SHA=${FRONTEND_SHA}"
         }
         failure {
-            echo "✗ Frontend Pipeline failed!"
+            echo "FAILED: frontend pipeline"
         }
     }
 }

@@ -1,16 +1,16 @@
 jenkins:
-  systemMessage: "Jenkins configured automatically for AKS Data Structures DevOps"
+  systemMessage: "Jenkins configured automatically for CloudRift"
   numExecutors: 2
   mode: NORMAL
   scmCheckoutRetryCount: 3
-  
+
   securityRealm:
     local:
       allowsSignup: false
       users:
         - id: admin
           password: admin123
-          
+
   authorizationStrategy:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
@@ -42,7 +42,7 @@ tool:
     installations:
       - name: "Default"
         home: "/usr/bin/git"
-        
+
   nodejs:
     installations:
       - name: "NodeJS 18"

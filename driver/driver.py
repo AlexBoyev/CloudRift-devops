@@ -437,6 +437,53 @@ def _get_connection_info() -> tuple[str | None, str | None]:
         print(f"⚠ Error fetching connection info: {e}")
         return None, None
 
+def _print_jenkins_initial_admin_password(endpoint: str) -> None:
+    """
+    Fetch and print Jenkins initial admin password (if setup wizard is enabled).
+    This works only on a fresh Jenkins with the unlock screen.
+    """
+    print("\n[Jenkins] Checking for initial admin password...")
+
+    ssh_cmd = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-i", STACK_KEY_PATH,
+        f"ubuntu@{endpoint}",
+        "sudo test -f /var/lib/jenkins/secrets/initialAdminPassword "
+        "&& sudo cat /var/lib/jenkins/secrets/initialAdminPassword "
+        "|| echo '__NO_PASSWORD__'"
+    ]
+
+    try:
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode != 0:
+            print("⚠ Could not fetch Jenkins password (SSH error)")
+            return
+
+        output = result.stdout.strip()
+
+        if output == "__NO_PASSWORD__":
+            print("✓ Jenkins setup wizard is disabled (no initial admin password).")
+            print("  Admin user is expected to be provisioned via Groovy / JCasC.")
+        elif output:
+            print("\n" + "=" * 70)
+            print("        JENKINS INITIAL ADMIN PASSWORD")
+            print("=" * 70)
+            print(output)
+            print("=" * 70)
+            print("Use this password on the Jenkins Unlock screen.")
+        else:
+            print("⚠ Jenkins password file empty or unreadable.")
+
+    except subprocess.TimeoutExpired:
+        print("⚠ Timeout while trying to fetch Jenkins password.")
+
 
 def _print_connection_info() -> None:
     """Print connection information after deployment."""
@@ -603,7 +650,12 @@ def _provision(p: RepoPaths, bash_path: Path) -> None:
     extra_env = {"ENABLE_AUTOSTART": "1"}
     _run_bash_script(bash_path, SETUP_SH, p.infra_dir, auto_confirm=False, extra_env=extra_env)
     _print_connection_info()
+    ip, dns = _get_connection_info()
+    endpoint = dns if dns else ip
+    if endpoint:
+        _print_jenkins_initial_admin_password(endpoint)
     print("[Provision] Completed successfully.")
+
 
 
 def _destroy(p: RepoPaths, bash_path: Path) -> None:

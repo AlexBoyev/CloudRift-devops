@@ -1,7 +1,3 @@
-// Backend Build and Deploy Pipeline
-// Handles building, testing, and deploying the backend service
-// Uses SSH to connect to EC2 and run commands there
-
 pipeline {
     agent any
 
@@ -12,21 +8,10 @@ pipeline {
     }
 
     parameters {
-        string(
-            name: 'BRANCH_NAME',
-            defaultValue: 'main',
-            description: 'Git branch to build'
-        )
-        string(
-            name: 'API_REPO_URL',
-            defaultValue: 'github.com/simple-ec2-deployment/new-backend.git',
-            description: 'Backend API repo URL'
-        )
-        string(
-            name: 'MINIKUBE_PROFILE',
-            defaultValue: 'minikube',
-            description: 'Minikube profile name'
-        )
+        string(name: 'BRANCH_NAME', defaultValue: 'main', description: 'Backend branch to build')
+        string(name: 'API_REPO_URL', defaultValue: 'github.com/AlexBoyev/CloudRift-backend.git', description: 'Backend repo URL')
+        string(name: 'DEVOPS_REPO_URL', defaultValue: 'https://github.com/AlexBoyev/CloudRift-devops.git', description: 'DevOps repo URL (manifests live here)')
+        string(name: 'MINIKUBE_PROFILE', defaultValue: 'minikube', description: 'Minikube profile name')
     }
 
     environment {
@@ -35,30 +20,70 @@ pipeline {
         EC2_SSH_KEY      = credentials('ec2-ssh-key')
         EC2_USER         = 'ubuntu'
         EC2_HOST         = credentials('ec2-host-ip')
+
         API_DIR          = '/home/ubuntu/new-backend'
         REPO_DIR         = '/home/ubuntu/new-devops-local'
+
         API_REPO_URL     = "${params.API_REPO_URL}"
+        DEVOPS_REPO_URL  = "${params.DEVOPS_REPO_URL}"
         MINIKUBE_PROFILE = "${params.MINIKUBE_PROFILE}"
 
-        // DYNAMIC TAGGING: Unique per build + commit for traceability
-        BACKEND_TAG      = "backend-${env.BUILD_NUMBER}-${GIT_COMMIT.take(8)}"
+        BACKEND_SHA      = ""
+        BACKEND_TAG      = ""
     }
 
     stages {
-        stage('Clone Backend Repo to EC2') {
+        stage('Sync DevOps Repo on EC2') {
             steps {
-                script {
-                    echo "==========================================="
-                    echo "Backend Pipeline - Cloning repository"
-                    echo "Branch: ${params.BRANCH_NAME}"
-                    echo "Tag: ${BACKEND_TAG}"
-                    echo "==========================================="
-                }
-
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' GITHUB_PASS='${GITHUB_PAT}' API_REPO='${API_REPO_URL}' API_DIR='${API_DIR}' bash -s" <<'SCRIPT'
+                          "GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
+set -euo pipefail
+
+normalize_url() {
+  local input="$1"
+  if echo "$input" | grep -qiE '^git@github.com:'; then
+    input=$(echo "$input" | sed -E 's|^git@github.com:|https://github.com/|')
+  elif echo "$input" | grep -qiE '^ssh://git@github.com/'; then
+    input=$(echo "$input" | sed -E 's|^ssh://git@github.com/|https://github.com/|')
+  elif ! echo "$input" | grep -qiE '^https?://'; then
+    input="https://$input"
+  fi
+  echo "$input"
+}
+
+FULL_URL="$(normalize_url "$DEVOPS_REPO")"
+TOKEN="${GITHUB_PAT}"
+AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
+AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  mkdir -p "$REPO_DIR"
+  echo "Cloning DevOps repo: $FULL_URL"
+  git -c http.extraHeader="$AUTH_HEADER" clone "$FULL_URL" "$REPO_DIR"
+else
+  echo "Updating DevOps repo..."
+  cd "$REPO_DIR"
+  git config --global --add safe.directory "$REPO_DIR"
+  git fetch --all
+  git reset --hard origin/main
+fi
+
+cd "$REPO_DIR"
+echo "DevOps commit: $(git rev-parse --short HEAD)"
+SCRIPT
+                    '''
+                }
+            }
+        }
+
+        stage('Sync Backend Repo on EC2') {
+            steps {
+                sshagent(credentials: ['ec2-ssh-key']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' API_REPO='${API_REPO_URL}' API_DIR='${API_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
 
@@ -75,44 +100,46 @@ normalize_url() {
 }
 
 FULL_URL="$(normalize_url "$API_REPO")"
-echo "Cloning backend repo: $FULL_URL"
-
-if [ -n "${GITHUB_PASS:-}" ]; then
-  TOKEN="$GITHUB_PASS"
-else
-  TOKEN="$GITHUB_PAT"
-fi
+TOKEN="${GITHUB_PAT}"
 AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
 AUTH_HEADER="Authorization: Basic $AUTH_B64"
 
 if [ ! -d "$API_DIR/.git" ]; then
   mkdir -p "$API_DIR"
-  echo "Cloning repository from branch: $BRANCH..."
+  echo "Cloning backend repo: $FULL_URL (branch: $BRANCH)"
   git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$API_DIR"
 else
-  echo "Repository exists, pulling latest changes from branch: $BRANCH..."
+  echo "Updating backend repo (branch: $BRANCH)..."
   cd "$API_DIR"
   git config --global --add safe.directory "$API_DIR"
   git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
   git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
-    echo "Pull failed, trying to reset..."
+    echo "Pull failed, resetting..."
     git fetch --all
     git reset --hard "origin/$BRANCH"
   }
 fi
 
 cd "$API_DIR"
-echo "Current branch: $(git branch --show-current)"
-echo "Latest commit:  $(git rev-parse --short HEAD)"
+echo "Backend SHA: $(git rev-parse --short HEAD)"
 SCRIPT
                     '''
+                }
+
+                script {
+                    def sha = sh(
+                        script: "ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \"cd ${API_DIR} && git rev-parse --short HEAD\"",
+                        returnStdout: true
+                    ).trim()
+                    env.BACKEND_SHA = sha
+                    env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
+                    echo "Using BACKEND_TAG=${env.BACKEND_TAG}"
                 }
             }
         }
 
-        stage('Build Docker Image on EC2') {
+        stage('Build Docker Images on EC2') {
             options {
-                // RETRY LOGIC: If network fails/EOF, retry 3 times automatically
                 retry(3)
                 timeout(time: 20, unit: 'MINUTES')
             }
@@ -122,49 +149,35 @@ SCRIPT
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
                            "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BACKEND_TAG='${BACKEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
-
 cd "$API_DIR"
 
-# Point Docker to Minikube daemon
 eval "$(minikube -p "${MINIKUBE_PROFILE}" docker-env)"
+echo "Building tag: ${BACKEND_TAG}"
 
-echo "Using backend tag: ${BACKEND_TAG}"
+cleanup_repo() {
+  local repo="$1"
+  docker images "$repo" --format '{{.Repository}}:{{.Tag}}' \
+    | grep "^${repo}:" \
+    | grep -v ":latest$" \
+    | grep -v ":${BACKEND_TAG}$" \
+    | xargs -r docker rmi -f || true
+}
 
-# Remove old non-latest tags to save space
-docker images backend-service     --format '{{.Repository}}:{{.Tag}}' | grep '^backend-service:'     | grep -v ':latest$' | xargs -r docker rmi -f || true
-docker images stack-service       --format '{{.Repository}}:{{.Tag}}' | grep '^stack-service:'       | grep -v ':latest$' | xargs -r docker rmi -f || true
-docker images linkedlist-service  --format '{{.Repository}}:{{.Tag}}' | grep '^linkedlist-service:'  | grep -v ':latest$' | xargs -r docker rmi -f || true
-docker images graph-service       --format '{{.Repository}}:{{.Tag}}' | grep '^graph-service:'       | grep -v ':latest$' | xargs -r docker rmi -f || true
-docker images postgres-db         --format '{{.Repository}}:{{.Tag}}' | grep '^postgres-db:'         | grep -v ':latest$' | xargs -r docker rmi -f || true
+cleanup_repo backend-service
+cleanup_repo stack-service
+cleanup_repo linkedlist-service
+cleanup_repo graph-service
+cleanup_repo postgres-db
 docker image prune -f || true
 
-echo "Building Docker image: backend-service:${BACKEND_TAG}"
 docker build -t "backend-service:${BACKEND_TAG}" -f backend/Dockerfile backend/
-
-echo "Building Docker image: stack-service:${BACKEND_TAG}"
 docker build -t "stack-service:${BACKEND_TAG}" -f stack/Dockerfile ./
-
-echo "Building Docker image: linkedlist-service:${BACKEND_TAG}"
 docker build -t "linkedlist-service:${BACKEND_TAG}" -f linkedlist/Dockerfile ./
-
-echo "Building Docker image: graph-service:${BACKEND_TAG}"
 docker build -t "graph-service:${BACKEND_TAG}" -f graph/Dockerfile ./
-
-echo "Building Docker image: postgres-db:${BACKEND_TAG}"
 docker build -t "postgres-db:${BACKEND_TAG}" -f database/Dockerfile ./
 
-echo "✓ Docker images built successfully with tag: ${BACKEND_TAG}"
-echo "Available images:"
+echo "Images built:"
 docker images | grep -E '^(backend-service|stack-service|linkedlist-service|graph-service|postgres-db)[[:space:]]' || true
-
-# Cleanup intermediate tags (Kubernetes uses the specific tag directly)
-echo "Cleaning up intermediate tags to save disk space..."
-docker rmi "backend-service:${BACKEND_TAG}"     || true
-docker rmi "stack-service:${BACKEND_TAG}"       || true
-docker rmi "linkedlist-service:${BACKEND_TAG}"  || true
-docker rmi "graph-service:${BACKEND_TAG}"       || true
-docker rmi "postgres-db:${BACKEND_TAG}"         || true
-docker image prune -f || true
 SCRIPT
                     '''
                 }
@@ -176,21 +189,20 @@ SCRIPT
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                            set -e
+
                             REPO_DIR='${REPO_DIR}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
                             BACKEND_TAG='${BACKEND_TAG}'
 
                             cd \\${REPO_DIR}
 
-                            # Ensure kubectl context is set
                             kubectl config use-context \\${MINIKUBE_PROFILE} || true
 
-                            # Ensure database is present before backend rollout
                             kubectl apply -f devops-infra/kubernetes/database/secret.yaml || true
                             kubectl apply -f devops-infra/kubernetes/database/service.yaml || true
                             kubectl apply -f devops-infra/kubernetes/database/statefulset.yaml || true
 
-                            # Apply Kubernetes manifests
                             kubectl apply -f devops-infra/kubernetes/backend/configmap.yaml   || true
                             kubectl apply -f devops-infra/kubernetes/backend/secret.yaml      || true
                             kubectl apply -f devops-infra/kubernetes/backend/deployment.yaml  || true
@@ -198,47 +210,22 @@ SCRIPT
                             kubectl apply -f devops-infra/kubernetes/ingress/ingress.yaml     || true
                             kubectl apply -f devops-infra/kubernetes/backend/hpa.yaml         || true
 
-                            # INJECT TAG: Set the exact backend tag into deployment env
                             kubectl set env deployment/backend-deployment BACKEND_TAG=\\${BACKEND_TAG} --containers=backend || true
 
-                            # Deploy data structure services (from backend repo)
                             kubectl apply -f devops-infra/kubernetes/data-structures/stack.yaml      || true
                             kubectl apply -f devops-infra/kubernetes/data-structures/linkedlist.yaml || true
                             kubectl apply -f devops-infra/kubernetes/data-structures/graph.yaml      || true
 
-                            # Rollout restart with new tag
                             kubectl rollout restart deployment/backend-deployment
                             kubectl rollout status deployment/backend-deployment --timeout=300s || true
 
                             echo ''
-                            echo '=== Backend Service with tag ${BACKEND_TAG} ==='
-                            kubectl get service backend-service -o wide || true
+                            echo '=== Services ==='
+                            kubectl get svc -o wide || true
 
                             echo ''
-                            echo '=== Data Structure Pods ==='
-                            kubectl get pods -l 'app in (stack-service,linkedlist-service,graph-service)' || true
-
-                            echo '✓ Backend deployed successfully with tag: ${BACKEND_TAG}'
-                        "
-                    '''
-                }
-            }
-        }
-
-        stage('Health Check') {
-            steps {
-                sshagent(credentials: ['ec2-ssh-key']) {
-                    sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
-                            # Wait for pods to be ready
-                            kubectl wait --for=condition=ready pod -l app=backend --timeout=120s || true
-
-                            # Get pod status
-                            echo ''
-                            echo '=== Backend Pods (latest tag) ==='
-                            kubectl get pods -l app=backend -o wide
-
-                            echo '✓ Health check passed'
+                            echo '=== Backend Pods ==='
+                            kubectl get pods -l app=backend -o wide || true
                         "
                     '''
                 }
@@ -248,13 +235,10 @@ SCRIPT
 
     post {
         success {
-            echo "=========================================="
-            echo "✓ Backend Pipeline completed successfully!"
-            echo "Tag: ${BACKEND_TAG}"
-            echo "=========================================="
+            echo "SUCCESS: BACKEND_TAG=${BACKEND_TAG} BACKEND_SHA=${BACKEND_SHA}"
         }
         failure {
-            echo "✗ Backend Pipeline failed!"
+            echo "FAILED: backend pipeline"
         }
     }
 }

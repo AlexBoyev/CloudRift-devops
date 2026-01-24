@@ -1,10 +1,9 @@
 jenkins:
-  systemMessage: "Jenkins - AKS Data Structures DevOps Platform (Fully Automated Setup)"
+  systemMessage: "Jenkins - CloudRift CI/CD (JCasC)"
   numExecutors: 2
   mode: NORMAL
   scmCheckoutRetryCount: 3
-  
-  # Security Configuration
+
   securityRealm:
     local:
       allowsSignup: false
@@ -13,7 +12,7 @@ jenkins:
           password: "${ADMIN_PASSWORD:-admin123}"
         - id: "developer"
           password: "${DEV_PASSWORD:-dev123}"
-          
+
   authorizationStrategy:
     roleBased:
       roles:
@@ -36,24 +35,21 @@ jenkins:
             assignments:
               - "developer"
 
-  # Global Security Settings
   remotingSecurity:
     enabled: true
-    
-  # Disable CLI over remoting
+
   globalNodeProperties:
     - envVars:
         env:
           - key: "DOCKER_HOST"
             value: "unix:///var/run/docker.sock"
 
-# Tool Configuration
 tool:
   git:
     installations:
       - name: "Default"
         home: "/usr/bin/git"
-        
+
   nodejs:
     installations:
       - name: "NodeJS-18"
@@ -62,7 +58,7 @@ tool:
               installers:
                 - nodeJSInstaller:
                     id: "18.19.0"
-                    
+
   dockerTool:
     installations:
       - name: "Docker"
@@ -72,19 +68,16 @@ tool:
                 - fromDocker:
                     version: "latest"
 
-# Global Configuration
 unclassified:
   location:
     adminAddress: "admin@example.com"
     url: "${JENKINS_URL:-http://localhost:8080/}"
-    
-  # Git SCM Configuration
+
   gitSCM:
     createAccountBasedOnEmail: false
     showEntireCommitSummaryInChanges: false
     useExistingAccountWithSameEmail: false
-    
-  # Global Libraries
+
   globalLibraries:
     libraries:
       - name: "shared-library"
@@ -93,97 +86,99 @@ unclassified:
             scm:
               git:
                 remote: "https://github.com/AlexBoyev/CloudRift-devops.git"
-                
-  # Docker Configuration
+
   docker:
     dockerhosts:
       - uri: "unix:///var/run/docker.sock"
 
-# Security Settings
 security:
   queueItemAuthenticator:
     authenticators:
       - global:
           strategy: triggeringUsersAuthorizationStrategy
-          
-# Credentials Configuration
+
 credentials:
   system:
     domainCredentials:
       - credentials:
+          # Generic GitHub credential used by JCasC jobs (Job DSL)
           - usernamePassword:
               scope: GLOBAL
               id: "github-credentials"
               username: "${GITHUB_USERNAME:-admin}"
               password: "${GITHUB_TOKEN:-admin123}"
               description: "GitHub credentials for repository access"
+
+          # These 3 match your pipelines (as you named them in Jenkinsfile.backend)
+          # If you already created them in Jenkins UI, keep the IDs identical and remove these from JCasC.
+          - usernamePassword:
+              scope: GLOBAL
+              id: "github-pat-token"
+              username: "${GITHUB_PAT_USERNAME:-x-access-token}"
+              password: "${GITHUB_PAT_TOKEN:-dummy-token}"
+              description: "GitHub PAT token (Username/Password). Username often 'x-access-token'."
+
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "ec2-ssh-key"
+              username: "${EC2_SSH_USER:-ubuntu}"
+              privateKeySource:
+                directEntry:
+                  privateKey: "${EC2_SSH_PRIVATE_KEY:-dummy-key}"
+              description: "SSH private key for EC2 access"
+
+          - string:
+              scope: GLOBAL
+              id: "ec2-host-ip"
+              secret: "${EC2_HOST_IP_OR_DNS:-ec2-44-200-153-213.compute-1.amazonaws.com}"
+              description: "EC2 host DNS or IP used by pipelines"
+
           - string:
               scope: GLOBAL
               id: "docker-hub-token"
               secret: "${DOCKER_HUB_TOKEN:-dummy-token}"
               description: "Docker Hub access token"
-          - basicSSHUserPrivateKey:
-              scope: GLOBAL
-              id: "ssh-key"
-              username: "jenkins"
-              privateKeySource:
-                directEntry:
-                  privateKey: "${SSH_PRIVATE_KEY:-dummy-key}"
-              description: "SSH key for server access"
 
-# Job DSL Configuration - Automated Pipeline Creation
 jobs:
   - script: >
-      // Create Frontend Pipeline
-      pipelineJob('frontend-pipeline') {
+      // ==========================================================
+      // CloudRift pipelines:
+      // - All Jenkinsfiles are stored in CloudRift-devops
+      // - Each repo triggers only its own pipeline via remote token
+      // ==========================================================
+
+      folder('CloudRift') {
+        displayName('CloudRift')
+        description('CloudRift CI/CD jobs (triggered by GitHub webhooks)')
+      }
+
+      // FRONTEND PIPELINE (Triggered by CloudRift-frontend webhook)
+      pipelineJob('CloudRift/frontend-pipeline') {
         displayName('Frontend CI/CD Pipeline')
-        description('Automated pipeline for frontend application')
+        description('Frontend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
+        authenticationToken('frontend-trigger')
         definition {
           cpsScm {
             scm {
               git {
                 remote {
-                  url('https://github.com/AlexBoyev/CloudRift-frontend.git')
+                  url('https://github.com/AlexBoyev/CloudRift-devops.git')
                   credentials('github-credentials')
                 }
                 branches('*/main')
-                scriptPath('Jenkinsfile')
+                scriptPath('devops-infra/jenkins/Jenkinsfile.frontend')
               }
             }
           }
         }
-        triggers {
-          githubPush()
-        }
+        // DO NOT add githubPush() here; SCM is devops and would trigger on devops pushes.
       }
 
-      // Create Backend Pipeline
-      pipelineJob('backend-pipeline') {
+      // BACKEND PIPELINE (Triggered by CloudRift-backend webhook)
+      pipelineJob('CloudRift/backend-pipeline') {
         displayName('Backend CI/CD Pipeline')
-        description('Automated pipeline for backend API')
-        definition {
-          cpsScm {
-            scm {
-              git {
-                remote {
-                  url('https://github.com/AlexBoyev/CloudRift-backend.git')
-                  credentials('github-credentials')
-                }
-                branches('*/main')
-                scriptPath('Jenkinsfile')
-              }
-            }
-          }
-        }
-        triggers {
-          githubPush()
-        }
-      }
-
-      // Create Infrastructure Pipeline
-      pipelineJob('infrastructure-pipeline') {
-        displayName('Infrastructure Deployment Pipeline')
-        description('Automated pipeline for infrastructure deployment')
+        description('Backend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
+        authenticationToken('backend-trigger')
         definition {
           cpsScm {
             scm {
@@ -193,17 +188,18 @@ jobs:
                   credentials('github-credentials')
                 }
                 branches('*/main')
-                scriptPath('Jenkinsfile-EC2')
+                scriptPath('devops-infra/jenkins/Jenkinsfile.backend')
               }
             }
           }
         }
       }
 
-      // Create Data Structures Services Pipeline
-      pipelineJob('data-structures-pipeline') {
-        displayName('Data Structures Services Pipeline')
-        description('Pipeline for stack, linkedlist, and graph services')
+      // DEVOPS PIPELINE (Triggered by CloudRift-devops webhook)
+      pipelineJob('CloudRift/devops-pipeline') {
+        displayName('DevOps Pipeline')
+        description('DevOps pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
+        authenticationToken('devops-trigger')
         definition {
           cpsScm {
             scm {
@@ -213,138 +209,9 @@ jobs:
                   credentials('github-credentials')
                 }
                 branches('*/main')
-                scriptPath('devops-infra/jenkins/Jenkinsfile.data-structures')
+                scriptPath('devops-infra/jenkins/Jenkinsfile.devops')
               }
             }
-          }
-        }
-      }
-
-      // Create Multi-branch Pipeline for all repositories
-      multibranchPipelineJob('aks-platform-multibranch') {
-        displayName('AKS Platform - Multi-branch Pipeline')
-        description('Multi-branch pipeline covering all project repositories')
-        branchSources {
-          github {
-            id('aks-platform')
-            scanCredentialsId('github-credentials')
-            repoOwner('simple-ec2-deployment')
-            repository('new-devops-local')
-          }
-        }
-        orphanedItemStrategy {
-          discardOldItems {
-            numToKeep(20)
-          }
-        }
-      }
-
-      // Create Folder for organizing jobs
-      folder('AKS-Platform') {
-        displayName('AKS Data Structures Platform')
-        description('All pipelines related to AKS Data Structures project')
-      }
-
-      // Move jobs into folder (restructured approach)
-      pipelineJob('AKS-Platform/frontend-build') {
-        displayName('Frontend Build & Deploy')
-        definition {
-          cps {
-            script('''
-              pipeline {
-                agent any
-                tools {
-                  nodejs 'NodeJS-18'
-                }
-                stages {
-                  stage('Checkout') {
-                    steps {
-                      git branch: 'main',
-                          credentialsId: 'github-credentials',
-                          url: 'https://github.com/AlexBoyev/CloudRift-frontend.git'
-                    }
-                  }
-                  stage('Install Dependencies') {
-                    steps {
-                      sh 'npm install'
-                    }
-                  }
-                  stage('Build') {
-                    steps {
-                      sh 'npm run build'
-                    }
-                  }
-                  stage('Test') {
-                    steps {
-                      sh 'npm test -- --coverage --watchAll=false'
-                    }
-                  }
-                  stage('Docker Build') {
-                    steps {
-                      script {
-                        def image = docker.build("ui-service:${BUILD_NUMBER}")
-                        image.tag("latest")
-                      }
-                    }
-                  }
-                  stage('Deploy to K8s') {
-                    steps {
-                      sh 'kubectl apply -f k8s/frontend/'
-                      sh 'kubectl rollout restart deployment/frontend-deployment'
-                    }
-                  }
-                }
-                post {
-                  always {
-                    cleanWs()
-                  }
-                }
-              }
-            ''')
-            sandbox()
-          }
-        }
-      }
-
-      pipelineJob('AKS-Platform/backend-build') {
-        displayName('Backend Build & Deploy')
-        definition {
-          cps {
-            script('''
-              pipeline {
-                agent any
-                stages {
-                  stage('Checkout') {
-                    steps {
-                      git branch: 'main',
-                          credentialsId: 'github-credentials',
-                          url: 'https://github.com/AlexBoyev/CloudRift-backend.git'
-                    }
-                  }
-                  stage('Build') {
-                    steps {
-                      sh 'pip install -r requirements.txt'
-                      sh 'python -m pytest tests/'
-                    }
-                  }
-                  stage('Docker Build') {
-                    steps {
-                      script {
-                        def image = docker.build("backend-service:${BUILD_NUMBER}")
-                        image.tag("latest")
-                      }
-                    }
-                  }
-                  stage('Deploy to K8s') {
-                    steps {
-                      sh 'kubectl apply -f k8s/backend/'
-                      sh 'kubectl rollout restart deployment/backend-deployment'
-                    }
-                  }
-                }
-              }
-            ''')
-            sandbox()
           }
         }
       }

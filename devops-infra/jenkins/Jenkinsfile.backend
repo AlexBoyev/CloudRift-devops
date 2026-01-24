@@ -16,9 +16,14 @@ pipeline {
 
     environment {
         BRANCH_NAME      = "${params.BRANCH_NAME ?: 'main'}"
+        // Must be Username/Password credential
         GITHUB_PAT       = credentials('github-pat-token')
+
+        // SSH key credential (SSH Username with private key)
         EC2_SSH_KEY      = credentials('ec2-ssh-key')
+
         EC2_USER         = 'ubuntu'
+        // Secret text credential containing only host/dns/ip (no http://, no :8080)
         EC2_HOST         = credentials('ec2-host-ip')
 
         API_DIR          = '/home/ubuntu/new-backend'
@@ -33,12 +38,14 @@ pipeline {
     }
 
     stages {
+
         stage('Sync DevOps Repo on EC2') {
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
+                        set -euo pipefail
+                        ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+                          "GITHUB_PAT='${GITHUB_PAT_PSW}' DEVOPS_REPO='${DEVOPS_REPO_URL}' REPO_DIR='${REPO_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 
 normalize_url() {
@@ -54,18 +61,23 @@ normalize_url() {
 }
 
 FULL_URL="$(normalize_url "$DEVOPS_REPO")"
-TOKEN="${GITHUB_PAT}"
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
-AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+# Use token in URL to prevent interactive prompt
+AUTH_URL="$FULL_URL"
+if echo "$FULL_URL" | grep -qiE '^https://github.com/'; then
+  AUTH_URL="$(echo "$FULL_URL" | sed -E "s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|")"
+fi
 
 if [ ! -d "$REPO_DIR/.git" ]; then
   mkdir -p "$REPO_DIR"
-  echo "Cloning DevOps repo: $FULL_URL"
-  git -c http.extraHeader="$AUTH_HEADER" clone "$FULL_URL" "$REPO_DIR"
+  echo "Cloning DevOps repo..."
+  git clone "$AUTH_URL" "$REPO_DIR"
 else
   echo "Updating DevOps repo..."
   cd "$REPO_DIR"
   git config --global --add safe.directory "$REPO_DIR"
+  # Ensure remote uses auth URL
+  git remote set-url origin "$AUTH_URL" || true
   git fetch --all
   git reset --hard origin/main
 fi
@@ -82,8 +94,9 @@ SCRIPT
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
-                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT}' GITHUB_USER='${GITHUB_PAT_USR}' API_REPO='${API_REPO_URL}' API_DIR='${API_DIR}' bash -s" <<'SCRIPT'
+                        set -euo pipefail
+                        ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+                          "BRANCH='${BRANCH_NAME}' GITHUB_PAT='${GITHUB_PAT_PSW}' API_REPO='${API_REPO_URL}' API_DIR='${API_DIR}' bash -s" <<'SCRIPT'
 set -euo pipefail
 : "${BRANCH:=main}"
 
@@ -100,20 +113,30 @@ normalize_url() {
 }
 
 FULL_URL="$(normalize_url "$API_REPO")"
-TOKEN="${GITHUB_PAT}"
-AUTH_B64="$(printf '%s' "${GITHUB_USER:-x-access-token}:$TOKEN" | base64 | tr -d '\n')"
-AUTH_HEADER="Authorization: Basic $AUTH_B64"
+
+# Use token in URL to prevent interactive prompt
+AUTH_URL="$FULL_URL"
+if echo "$FULL_URL" | grep -qiE '^https://github.com/'; then
+  AUTH_URL="$(echo "$FULL_URL" | sed -E "s|^https://github.com/|https://x-access-token:${GITHUB_PAT}@github.com/|")"
+fi
 
 if [ ! -d "$API_DIR/.git" ]; then
   mkdir -p "$API_DIR"
-  echo "Cloning backend repo: $FULL_URL (branch: $BRANCH)"
-  git -c http.extraHeader="$AUTH_HEADER" clone -b "$BRANCH" "$FULL_URL" "$API_DIR"
+  echo "Cloning backend repo (branch: $BRANCH)..."
+  git clone -b "$BRANCH" "$AUTH_URL" "$API_DIR"
 else
   echo "Updating backend repo (branch: $BRANCH)..."
   cd "$API_DIR"
   git config --global --add safe.directory "$API_DIR"
+
+  # Ensure remote uses auth URL
+  git remote set-url origin "$AUTH_URL" || true
+
+  git fetch --all
   git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-  git -c http.extraHeader="$AUTH_HEADER" pull "$FULL_URL" "$BRANCH" || {
+
+  # Use origin after remote set-url, avoids prompts
+  git pull origin "$BRANCH" || {
     echo "Pull failed, resetting..."
     git fetch --all
     git reset --hard "origin/$BRANCH"
@@ -124,16 +147,23 @@ cd "$API_DIR"
 echo "Backend SHA: $(git rev-parse --short HEAD)"
 SCRIPT
                     '''
-                }
 
-                script {
-                    def sha = sh(
-                        script: "ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \"cd ${API_DIR} && git rev-parse --short HEAD\"",
-                        returnStdout: true
-                    ).trim()
-                    env.BACKEND_SHA = sha
-                    env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
-                    echo "Using BACKEND_TAG=${env.BACKEND_TAG}"
+                    // IMPORTANT: this ssh call must also run under sshagent,
+                    // otherwise you get "Permission denied (publickey)".
+                    script {
+                        def sha = sh(
+                            script: """
+                                set -euo pipefail
+                                ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
+                                  'cd ${API_DIR} && git rev-parse --short HEAD'
+                            """,
+                            returnStdout: true
+                        ).trim()
+
+                        env.BACKEND_SHA = sha
+                        env.BACKEND_TAG = "backend-${env.BUILD_NUMBER}-${sha}"
+                        echo "Using BACKEND_TAG=${env.BACKEND_TAG}"
+                    }
                 }
             }
         }
@@ -146,7 +176,8 @@ SCRIPT
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} \
+                        set -euo pipefail
+                        ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" \
                            "API_DIR='${API_DIR}' MINIKUBE_PROFILE='${MINIKUBE_PROFILE}' BACKEND_TAG='${BACKEND_TAG}' bash -s" <<'SCRIPT'
 set -euo pipefail
 cd "$API_DIR"
@@ -188,16 +219,17 @@ SCRIPT
             steps {
                 sshagent(credentials: ['ec2-ssh-key']) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${EC2_USER}@${EC2_HOST} "
+                        set -euo pipefail
+                        ssh -o StrictHostKeyChecking=no "${EC2_USER}@${EC2_HOST}" "
                             set -e
 
                             REPO_DIR='${REPO_DIR}'
                             MINIKUBE_PROFILE='${MINIKUBE_PROFILE}'
                             BACKEND_TAG='${BACKEND_TAG}'
 
-                            cd \\${REPO_DIR}
+                            cd \${REPO_DIR}
 
-                            kubectl config use-context \\${MINIKUBE_PROFILE} || true
+                            kubectl config use-context \${MINIKUBE_PROFILE} || true
 
                             kubectl apply -f devops-infra/kubernetes/database/secret.yaml || true
                             kubectl apply -f devops-infra/kubernetes/database/service.yaml || true
@@ -210,7 +242,7 @@ SCRIPT
                             kubectl apply -f devops-infra/kubernetes/ingress/ingress.yaml     || true
                             kubectl apply -f devops-infra/kubernetes/backend/hpa.yaml         || true
 
-                            kubectl set env deployment/backend-deployment BACKEND_TAG=\\${BACKEND_TAG} --containers=backend || true
+                            kubectl set env deployment/backend-deployment BACKEND_TAG=\${BACKEND_TAG} --containers=backend || true
 
                             kubectl apply -f devops-infra/kubernetes/data-structures/stack.yaml      || true
                             kubectl apply -f devops-infra/kubernetes/data-structures/linkedlist.yaml || true

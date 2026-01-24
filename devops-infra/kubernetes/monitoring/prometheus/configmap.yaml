@@ -1,4 +1,3 @@
-
 # Prometheus Configuration
 apiVersion: v1
 kind: ConfigMap
@@ -9,8 +8,8 @@ metadata:
 data:
   prometheus.yml: |
     global:
-      scrape_interval: 15s
-      evaluation_interval: 15s
+      scrape_interval: 1h
+      evaluation_interval: 1h
       external_labels:
         cluster: 'aks-data-structures'
         env: 'development'

@@ -1,8 +1,7 @@
-# Grafana Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: grafana
+  name: grafana-deployment
   labels:
     app: grafana
     tier: monitoring
@@ -11,6 +10,11 @@ spec:
   selector:
     matchLabels:
       app: grafana
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   template:
     metadata:
       labels:
@@ -18,63 +22,94 @@ spec:
         tier: monitoring
     spec:
       containers:
-      - name: grafana
-        image: grafana/grafana:10.1.5
-        ports:
-        - containerPort: 3000
-          name: http
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-          limits:
-            cpu: "300m"
-            memory: "512Mi"
-        env:
-        - name: GF_SECURITY_ADMIN_USER
-          value: "admin"
-        - name: GF_SECURITY_ADMIN_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: grafana-secrets
-              key: admin-password
-              optional: true
-        - name: GF_INSTALL_PLUGINS
-          value: "grafana-clock-panel,grafana-simple-json-datasource"
-        - name: GF_SERVER_ROOT_URL
-          value: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
-        - name: GF_SERVER_SERVE_FROM_SUB_PATH
-          value: "true"
-        volumeMounts:
-        - name: grafana-storage
-          mountPath: /var/lib/grafana
-        - name: grafana-datasources
-          mountPath: /etc/grafana/provisioning/datasources
-        - name: grafana-dashboards-provider
-          mountPath: /etc/grafana/provisioning/dashboards
-        - name: grafana-dashboards
-          mountPath: /var/lib/grafana/dashboards
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: 3000
-          initialDelaySeconds: 60
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /api/health
-            port: 3000
-          initialDelaySeconds: 20
-          periodSeconds: 5
+        - name: grafana
+          image: grafana/grafana:latest
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 3000
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "512Mi"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+
+          # Health checks: tuned down to reduce repetitive traffic patterns
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          env:
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: grafana-secrets
+                  key: admin-password
+
+            - name: GF_SERVER_HTTP_PORT
+              value: "3000"
+
+            # Optional: if you run behind a reverse proxy/ingress and need stable URLs
+            # - name: GF_SERVER_ROOT_URL
+            #   value: "%(protocol)s://%(domain)s:%(http_port)s/"
+
+          volumeMounts:
+            # Provision Prometheus datasource
+            - name: grafana-datasources
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+              readOnly: true
+
+            # Provision dashboard provider
+            - name: grafana-dashboards-provider
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+              readOnly: true
+
+            # Dashboards directory (emptyDir by default; replace with PVC if you persist dashboards as files)
+            - name: grafana-dashboards
+              mountPath: /var/lib/grafana/dashboards
+
       volumes:
-      - name: grafana-storage
-        emptyDir: {}
-      - name: grafana-datasources
-        configMap:
-          name: grafana-datasources
-      - name: grafana-dashboards-provider
-        configMap:
-          name: grafana-dashboards-provider
-      - name: grafana-dashboards
-        configMap:
-          name: grafana-dashboards
+        - name: grafana-datasources
+          configMap:
+            name: grafana-datasources
+
+        - name: grafana-dashboards-provider
+          configMap:
+            name: grafana-dashboards-provider
+
+        - name: grafana-dashboards
+          emptyDir: {}

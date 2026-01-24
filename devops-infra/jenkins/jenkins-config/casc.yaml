@@ -38,7 +38,7 @@ jenkins:
   remotingSecurity:
     enabled: true
 
-  # CSRF Protection Configuration - Allow remote build triggers
+  # CRITICAL: CSRF Protection - Allow GitHub webhooks
   crumbIssuer:
     standard:
       excludeClientIPFromCrumb: true
@@ -96,13 +96,20 @@ unclassified:
     dockerhosts:
       - uri: "unix:///var/run/docker.sock"
 
+  # GitHub configuration for webhook integration
+  githubpluginconfig:
+    configs:
+      - name: "GitHub"
+        apiUrl: "https://api.github.com"
+        manageHooks: true
+        credentialsId: "github-pat-token"
+
 security:
   queueItemAuthenticator:
     authenticators:
       - global:
           strategy: triggeringUsersAuthorizationStrategy
 
-  # Additional security option to exempt authentication tokens from CSRF
   apiToken:
     creationOfLegacyTokenEnabled: false
     tokenGenerationOnCreationEnabled: false
@@ -147,6 +154,13 @@ credentials:
               secret: "${DOCKER_HUB_TOKEN:-dummy-token}"
               description: "Docker Hub access token"
 
+          # GitHub webhook secret for security
+          - string:
+              scope: GLOBAL
+              id: "github-webhook-secret"
+              secret: "${GITHUB_WEBHOOK_SECRET:-change-me-to-random-string}"
+              description: "Secret for GitHub webhook validation"
+
 jobs:
   - script: >
       folder('CloudRift') {
@@ -156,15 +170,24 @@ jobs:
 
       pipelineJob('CloudRift/frontend-pipeline') {
         displayName('Frontend CI/CD Pipeline')
-        description('Frontend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
-        authenticationToken('frontend-trigger')
+        description('Frontend pipeline triggered by GitHub webhook on push to CloudRift-frontend')
+        
+        properties {
+          githubProjectUrl('https://github.com/AlexBoyev/CloudRift-frontend')
+          pipelineTriggers {
+            triggers {
+              githubPush()
+            }
+          }
+        }
+        
         definition {
           cpsScm {
             scm {
               git {
                 remote {
                   url('https://github.com/AlexBoyev/CloudRift-devops.git')
-                  credentials('github-credentials')
+                  credentials('github-pat-token')
                 }
                 branches('*/main')
                 scriptPath('devops-infra/jenkins/Jenkinsfile.frontend')
@@ -176,15 +199,24 @@ jobs:
 
       pipelineJob('CloudRift/backend-pipeline') {
         displayName('Backend CI/CD Pipeline')
-        description('Backend pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
-        authenticationToken('backend-trigger')
+        description('Backend pipeline triggered by GitHub webhook on push to CloudRift-backend')
+        
+        properties {
+          githubProjectUrl('https://github.com/AlexBoyev/CloudRift-backend')
+          pipelineTriggers {
+            triggers {
+              githubPush()
+            }
+          }
+        }
+        
         definition {
           cpsScm {
             scm {
               git {
                 remote {
                   url('https://github.com/AlexBoyev/CloudRift-devops.git')
-                  credentials('github-credentials')
+                  credentials('github-pat-token')
                 }
                 branches('*/main')
                 scriptPath('devops-infra/jenkins/Jenkinsfile.backend')
@@ -196,18 +228,27 @@ jobs:
 
       pipelineJob('CloudRift/devops-pipeline') {
         displayName('DevOps Pipeline')
-        description('DevOps pipeline. Jenkinsfile stored in CloudRift-devops. Triggered via remote token.')
-        authenticationToken('devops-trigger')
+        description('DevOps pipeline triggered by GitHub webhook on push to CloudRift-devops')
+        
+        properties {
+          githubProjectUrl('https://github.com/AlexBoyev/CloudRift-devops')
+          pipelineTriggers {
+            triggers {
+              githubPush()
+            }
+          }
+        }
+        
         definition {
           cpsScm {
             scm {
               git {
                 remote {
                   url('https://github.com/AlexBoyev/CloudRift-devops.git')
-                  credentials('github-credentials')
+                  credentials('github-pat-token')
                 }
                 branches('*/main')
-                scriptPath('devops-infra/jenkins/Jenkinsfile.devops')
+                scriptPath('devops-infra/jenkins/Jenkinsfile')
               }
             }
           }

@@ -1,5 +1,8 @@
 # Backend Deployment
-# Enhanced deployment with resource limits, probes, and environment configuration
+# Updated to reduce /health polling volume (probes) while keeping safe Kubernetes behavior.
+# - readinessProbe: every 30s (routing decisions)
+# - livenessProbe: every 60s (restart decision)
+# - startupProbe: protects slow startups from premature liveness failures
 
 apiVersion: apps/v1
 kind: Deployment
@@ -29,95 +32,124 @@ spec:
         prometheus.io/path: "/metrics"
     spec:
       initContainers:
-      - name: wait-for-postgres
-        image: busybox:1.28
-        command: [ 'sh', '-c', "until nc -zv postgres-service 5432; do echo waiting for postgres; sleep 2; done" ]
+        - name: wait-for-postgres
+          image: busybox:1.28
+          command: [ "sh", "-c", "until nc -zv postgres-service 5432; do echo waiting for postgres; sleep 2; done" ]
+
       containers:
-      - name: backend
-        # DYNAMIC TAGGING: Uses env var set by Jenkins
-        image: backend-service:$(BACKEND_TAG)
-        imagePullPolicy: Always  # Force pull new tag
-        ports:
-        - containerPort: 5000
-          name: http
-        resources:
-          requests:
-            cpu: "100m"
-            memory: "128Mi"
-          limits:
-            cpu: "300m"
-            memory: "256Mi"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 5000
-          initialDelaySeconds: 15
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /health
-            port: 5000
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
-        env:
-        - name: FLASK_ENV
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: FLASK_ENV
-        - name: PORT
-          value: "5000"
-        - name: LOG_LEVEL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: LOG_LEVEL
-        - name: STACK_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: STACK_URL
-        - name: LINKEDLIST_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: LINKEDLIST_URL
-        - name: GRAPH_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: GRAPH_URL
-        - name: DATABASE_URL
-          valueFrom:
-            secretKeyRef:
-              name: backend-secrets
-              key: DATABASE_URL
-        - name: SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: backend-secrets
-              key: SECRET_KEY
-        - name: STACK_SERVICE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: STACK_SERVICE_URL
-        - name: LINKEDLIST_SERVICE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: LINKEDLIST_SERVICE_URL
-        - name: GRAPH_SERVICE_URL
-          valueFrom:
-            configMapKeyRef:
-              name: backend-config
-              key: GRAPH_SERVICE_URL
-        - name: PROMETHEUS_MULTIPROC_DIR
-          value: "/tmp"
-        # NEW: Backend tag env var - injected by Jenkins
-        - name: BACKEND_TAG
-          value: "latest"
+        - name: backend
+          # DYNAMIC TAGGING: Uses env var set by Jenkins (note: Kubernetes does NOT substitute env vars inside image names)
+          image: backend-service:$(BACKEND_TAG)
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+              name: http
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+
+          # NEW: startupProbe prevents early liveness failures during cold start / migrations.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            # 30 * 10s = up to 5 minutes allowed for startup
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+
+          # UPDATED: reduce steady-state traffic to /health
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # UPDATED: reduce steady-state traffic to /health (and avoid hammering upstream if this is proxied to EC2)
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          env:
+            - name: FLASK_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: FLASK_ENV
+
+            - name: PORT
+              value: "5000"
+
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: LOG_LEVEL
+
+            - name: STACK_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: STACK_URL
+
+            - name: LINKEDLIST_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: LINKEDLIST_URL
+
+            - name: GRAPH_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: GRAPH_URL
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: DATABASE_URL
+
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: backend-secrets
+                  key: SECRET_KEY
+
+            - name: STACK_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: STACK_SERVICE_URL
+
+            - name: LINKEDLIST_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: LINKEDLIST_SERVICE_URL
+
+            - name: GRAPH_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: backend-config
+                  key: GRAPH_SERVICE_URL
+
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: "/tmp"
+
+            # Backend tag env var - injected by Jenkins
+            - name: BACKEND_TAG
+              value: "latest"

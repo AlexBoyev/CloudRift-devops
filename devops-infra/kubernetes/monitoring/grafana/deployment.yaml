@@ -41,8 +41,6 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
 
-          # Health checks: tuned down to reduce repetitive traffic patterns
-          # IMPORTANT: when serving from /grafana, health endpoints must include the sub-path
           startupProbe:
             httpGet:
               path: /grafana/api/health
@@ -82,7 +80,6 @@ spec:
             - name: GF_SERVER_HTTP_PORT
               value: "3000"
 
-            # FIX: Run Grafana behind the ingress sub-path /grafana
             - name: GF_SERVER_ROOT_URL
               value: "%(protocol)s://%(domain)s/grafana/"
 
@@ -90,21 +87,20 @@ spec:
               value: "true"
 
           volumeMounts:
-            # Provision Prometheus datasource
             - name: grafana-datasources
               mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
               subPath: datasources.yaml
               readOnly: true
 
-            # Provision dashboard provider
             - name: grafana-dashboards-provider
               mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
               subPath: dashboards.yaml
               readOnly: true
 
-            # Dashboards directory (emptyDir by default; replace with PVC if you persist dashboards as files)
+            # FIX: dashboards JSON files must be mounted here (directory mount)
             - name: grafana-dashboards
               mountPath: /var/lib/grafana/dashboards
+              readOnly: true
 
       volumes:
         - name: grafana-datasources
@@ -115,5 +111,7 @@ spec:
           configMap:
             name: grafana-dashboards-provider
 
+        # FIX: this must be ConfigMap (NOT emptyDir)
         - name: grafana-dashboards
-          emptyDir: {}
+          configMap:
+            name: grafana-dashboards

@@ -1,7 +1,5 @@
-# Grafana ConfigMaps
-# Datasources, dashboard provider, and secrets
+# Grafana ConfigMaps + Secret
 ---
-# Prometheus Datasource
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,13 +11,13 @@ data:
     apiVersion: 1
     datasources:
       - name: Prometheus
+        uid: prometheus
         type: prometheus
         access: proxy
-        url: http://prometheus-service:9090/prometheus
+        url: http://prometheus-service:9090
         isDefault: true
         editable: false
 ---
-# Dashboard Provider Configuration
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -39,7 +37,6 @@ data:
         options:
           path: /var/lib/grafana/dashboards
 ---
-# Grafana Secrets
 apiVersion: v1
 kind: Secret
 metadata:

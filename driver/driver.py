@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # -----------------------------
-# USER CONFIG: Local Key Path
+# USER CONFIG: Local Key Paths
 # -----------------------------
 STACK_KEY_PATH = r"C:\Users\Alex\CloudRift-3-repos\CloudRift-devops\aws-infrastrucutre-terraform\environments\dev\terraform-modules\modules\ec2\keys\stack_key.pem"
 

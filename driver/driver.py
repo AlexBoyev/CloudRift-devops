@@ -617,7 +617,7 @@ def _stop_start_ec2() -> None:
     _show_connection_info()
 
 def _show_connection_info() -> None:
-    """Display current EC2 connection information."""
+    """Display current EC2 connection information + Jenkins SSH tunnel command."""
     print("\n[Fetching EC2 Connection Info...]")
 
     ip, dns = _get_connection_info()
@@ -625,6 +625,8 @@ def _show_connection_info() -> None:
     if not ip and not dns:
         print("⚠ No running instance found for owner: " + owner)
         return
+
+    endpoint = dns if dns else ip
 
     print("\n" + "=" * 70)
     print("                 EC2 CONNECTION INFO")
@@ -637,15 +639,21 @@ def _show_connection_info() -> None:
 
     print("-" * 70)
 
-    endpoint = dns if dns else ip
     if endpoint:
         print(f"Frontend URL:     http://{endpoint}/")
-        print(f"Jenkins URL:      http://{endpoint}:8080/")
         print(f"API URL:          http://{endpoint}/api/")
         print("-" * 70)
-        print("SSH Connection Command:")
-        print(f'ssh -i {STACK_KEY_PATH} ubuntu@{endpoint}')
-        print("-" * 70 + "\n")
+
+        print("Jenkins access (via SSH tunnel):")
+        print(f"  ssh -i {STACK_KEY_PATH} -L 8080:localhost:8080 ubuntu@{endpoint}")
+        print("  Then open: http://localhost:8080")
+        print("-" * 70)
+
+        print("Direct SSH connection:")
+        print(f"  ssh -i {STACK_KEY_PATH} ubuntu@{endpoint}")
+
+    print("-" * 70 + "\n")
+3
 
 
 # ---------------------------------------------------------------------

@@ -24,7 +24,7 @@ TARGET_USER="${SUDO_USER:-${USER:-ubuntu}}"
 TARGET_HOME="/home/${TARGET_USER}"
 
 # -------------------------------------------------------------------
-# Controls (override via Terraform env exports or /home/<user>/.env)
+# Controls (override via Terraform exports or /home/<user>/.env)
 # -------------------------------------------------------------------
 START_MINIKUBE="${START_MINIKUBE:-1}"                 # 1=start minikube, 0=skip
 MINIKUBE_DRIVER="${MINIKUBE_DRIVER:-docker}"          # docker (matches your runs)
@@ -89,13 +89,39 @@ sudo chown "${TARGET_USER}:${TARGET_USER}" "${ENV_FILE}"
 # Normalize Windows CRLF early
 sed -i 's/\r$//' "${ENV_FILE}" || true
 
-# Ensure SMEE_URL/SMEE_TARGET exist (NO QUOTES; systemd does not strip them)
+# Ensure SMEE_URL exists (GitHub webhook relay source - smee.io)
 if ! grep -q '^SMEE_URL=' "${ENV_FILE}"; then
   echo 'SMEE_URL=https://smee.io/3kEdRwsh19vXOgv' | sudo tee -a "${ENV_FILE}" >/dev/null
 fi
-if ! grep -q '^SMEE_TARGET=' "${ENV_FILE}"; then
-  echo 'SMEE_TARGET=http://127.0.0.1:8080/generic-webhook-trigger/invoke' | sudo tee -a "${ENV_FILE}" >/dev/null
+
+# Ensure SMEE_SOURCE exists (preferred name). Keep it aligned with SMEE_URL for backwards compatibility.
+if ! grep -q '^SMEE_SOURCE=' "${ENV_FILE}"; then
+  SMEE_URL_VAL="$(grep '^SMEE_URL=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)"
+  echo "SMEE_SOURCE=${SMEE_URL_VAL}" | sudo tee -a "${ENV_FILE}" >/dev/null
 fi
+
+# Ensure a webhook token exists for Generic Webhook Trigger (bypasses CSRF/crumb)
+# IMPORTANT: Set the SAME token in the Jenkins job:
+#   backend-pipeline -> Configure -> Build Triggers -> Generic Webhook Trigger -> Token
+if ! grep -q '^JENKINS_WEBHOOK_TOKEN=' "${ENV_FILE}"; then
+  echo 'JENKINS_WEBHOOK_TOKEN=cloudrift-backend' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+
+TOKEN_VAL="$(grep '^JENKINS_WEBHOOK_TOKEN=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]')"
+if [ -z "${TOKEN_VAL}" ]; then
+  TOKEN_VAL="cloudrift-backend"
+fi
+
+# Ensure SMEE_TARGET exists and points to the correct Jenkins endpoint (NOTE: no /jenkins context path here)
+# Using ?token=... avoids "No valid crumb" CSRF failures.
+SMEE_TARGET_WITH_TOKEN="http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_VAL}"
+
+if grep -q '^SMEE_TARGET=' "${ENV_FILE}"; then
+  sudo sed -i "s|^SMEE_TARGET=.*|SMEE_TARGET=${SMEE_TARGET_WITH_TOKEN}|" "${ENV_FILE}"
+else
+  echo "SMEE_TARGET=${SMEE_TARGET_WITH_TOKEN}" | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+
 
 # -------------------------------------------------------------------
 # Node.js + smee-client (GitHub webhook relay)
@@ -229,7 +255,7 @@ fi
 sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
 
 # -------------------------------------------------------------------
-# smee systemd service (reads SMEE_URL/SMEE_TARGET from /home/<user>/.env)
+# smee systemd service (reads SMEE_SOURCE/SMEE_TARGET from /home/<user>/.env)
 # -------------------------------------------------------------------
 log "Creating/Updating smee-jenkins.service..."
 cat <<EOF | sudo tee /etc/systemd/system/smee-jenkins.service >/dev/null
@@ -242,7 +268,7 @@ StartLimitIntervalSec=0
 Type=simple
 User=${TARGET_USER}
 EnvironmentFile=${ENV_FILE}
-ExecStart=/usr/bin/env smee -u \${SMEE_URL} --target \${SMEE_TARGET}
+ExecStart=/bin/bash -lc 'exec /usr/bin/smee -u "$SMEE_SOURCE" --target "$SMEE_TARGET"'
 Restart=always
 RestartSec=3
 

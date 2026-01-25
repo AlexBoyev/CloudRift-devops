@@ -1,0 +1,73 @@
+pipeline {
+  agent any
+
+  options {
+    disableConcurrentBuilds()
+    timestamps()
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+  }
+
+  environment {
+    SSH_CRED_ID = "ec2-ssh-key"
+    SSH_HOST = "127.0.0.1"
+    SSH_USER = "ubuntu"
+    SSH_PORT = "22"
+
+    BACKEND_DIR    = "/home/ubuntu/new-backend"
+    BACKEND_BRANCH = "main"
+    BACKEND_REPO   = "https://github.com/AlexBoyev/CloudRift-backend.git"
+
+    K8S_NAMESPACE = "default"
+    DEPLOYMENT    = "backend-deployment"
+    CONTAINER     = "backend"
+
+    IMAGE_NAME = "backend-service"
+  }
+
+  stages {
+    stage('Deploy backend via SSH') {
+      steps {
+        sshagent(credentials: [env.SSH_CRED_ID]) {
+          sh '''
+            set -e
+
+            ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+              "BACKEND_DIR='$BACKEND_DIR' BACKEND_BRANCH='$BACKEND_BRANCH' BACKEND_REPO='$BACKEND_REPO' K8S_NAMESPACE='$K8S_NAMESPACE' DEPLOYMENT='$DEPLOYMENT' CONTAINER='$CONTAINER' IMAGE_NAME='$IMAGE_NAME' bash -s" <<'REMOTE'
+              set -euo pipefail
+
+              echo "== Identity =="; whoami; hostname; date
+
+              cd "$BACKEND_DIR"
+              git remote set-url origin "$BACKEND_REPO"
+              git fetch origin "$BACKEND_BRANCH"
+              git reset --hard "origin/$BACKEND_BRANCH"
+              git clean -fd
+
+              GIT_SHA="$(git rev-parse --short HEAD)"
+              IMAGE_TAG="$GIT_SHA"
+              echo "Commit: $GIT_SHA"
+              echo "Deploying: $IMAGE_NAME:$IMAGE_TAG"
+
+              echo "== Preflight =="
+              minikube status
+              kubectl get deployment/"$DEPLOYMENT" -n "$K8S_NAMESPACE" -o wide
+
+              echo "== Build (Dockerfile expects backend/ context) =="
+              docker build -t "$IMAGE_NAME:$IMAGE_TAG" -f backend/Dockerfile backend
+
+              echo "== Load into Minikube =="
+              minikube image load "$IMAGE_NAME:$IMAGE_TAG"
+
+              echo "== Update deployment image =="
+              kubectl set image -n "$K8S_NAMESPACE" deployment/"$DEPLOYMENT" "$CONTAINER"="$IMAGE_NAME:$IMAGE_TAG"
+              kubectl rollout status -n "$K8S_NAMESPACE" deployment/"$DEPLOYMENT" --timeout=180s
+
+              echo "== Verify =="
+              kubectl get deploy/"$DEPLOYMENT" -n "$K8S_NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].name}{" | "}{.spec.template.spec.containers[0].image}{"\\n"}'
+REMOTE
+          '''
+        }
+      }
+    }
+  }
+}

@@ -34,6 +34,9 @@ owner: str = ""  # Must match IAM username
 ec2_dns: str = ""  # NEW: Custom DNS name for EC2
 smee_url: str = ""
 smee_target: str = ""
+smee_backend: str = ""
+smee_frontend: str = ""
+smee_devops: str = ""
 # -----------------------------
 # Constants
 # -----------------------------
@@ -162,6 +165,7 @@ def _apply_env(data: dict[str, str]) -> None:
     global account_id, owner, ec2_dns
     global devops_repo_url, backend_repo_url, frontend_repo_url
     global git_username, git_pat
+    global smee_backend, smee_frontend, smee_devops, smee_url, smee_target
 
     def pick(*names: str) -> str:
         for n in names:
@@ -184,6 +188,9 @@ def _apply_env(data: dict[str, str]) -> None:
     git_pat = pick("GITHUB_PAT", "GIT_PAT", "git_pat")
     smee_url = pick("SMEE_URL", "smee_url")
     smee_target = pick("SMEE_TARGET", "smee_target")
+    smee_backend = pick("SMEE_BACKEND", "smee_backend")
+    smee_frontend = pick("SMEE_FRONTEND", "smee_frontend")
+    smee_devops = pick("SMEE_DEVOPS", "smee_devops")
 
     missing = []
     if not aws_region: missing.append("AWS_REGION")
@@ -335,7 +342,9 @@ def _clean_env_for_subprocess() -> dict[str, str]:
     # Pass vars for AWS CLI
     env["AWS_ACCESS_KEY_ID"] = aws_access_token
     env["SMEE_URL"] = smee_url
-
+    env["SMEE_BACKEND"] = smee_backend
+    env["SMEE_FRONTEND"] = smee_frontend
+    env["SMEE_DEVOPS"] = smee_devops
     env["SMEE_TARGET"] = smee_target
     env["AWS_SECRET_ACCESS_KEY"] = aws_secret_token
     if aws_session_token: env["AWS_SESSION_TOKEN"] = aws_session_token

@@ -89,39 +89,105 @@ sudo chown "${TARGET_USER}:${TARGET_USER}" "${ENV_FILE}"
 # Normalize Windows CRLF early
 sed -i 's/\r$//' "${ENV_FILE}" || true
 
-# Ensure SMEE_URL exists (GitHub webhook relay source - smee.io)
+# -------------------------------------------------------------------
+# .env helpers
+# -------------------------------------------------------------------
+ensure_env_kv() {
+  # Usage: ensure_env_kv KEY VALUE
+  # - Adds KEY=VALUE if missing
+  # - Replaces existing KEY=... with KEY=VALUE
+  local key="$1"
+  local val="$2"
+
+  # Skip empty values (caller decides if required)
+  if [ -z "${val}" ]; then
+    return 0
+  fi
+
+  if grep -q "^${key}=" "${ENV_FILE}"; then
+    sudo sed -i "s|^${key}=.*|${key}=${val}|" "${ENV_FILE}"
+  else
+    echo "${key}=${val}" | sudo tee -a "${ENV_FILE}" >/dev/null
+  fi
+}
+
+get_env_val() {
+  # Usage: get_env_val KEY
+  grep -E "^$1=" "${ENV_FILE}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]'
+}
+
+# -------------------------------------------------------------------
+# Smee configuration (3 relays: backend, frontend, devops)
+# -------------------------------------------------------------------
+# Expected in /home/<user>/.env (IDs, not full URLs):
+#   SMEE_BACKEND=3kEdRwsh19vXOgv
+#   SMEE_FRONTEND=FCASOzN5CT5gAX8E
+#   SMEE_DEVOPS=qAEsSS3pm4W27c5
+#
+# Tokens per Jenkins Generic Webhook Trigger:
+#   backend  -> cloudrift-backend
+#   frontend -> cloudrift-frontend
+#   devops   -> cloudrift-devops
+#
+# Note: We also maintain legacy vars SMEE_URL/SMEE_SOURCE/SMEE_TARGET for backend compatibility.
+
+# If Terraform/userdata exported these, persist them into /home/<user>/.env
+ensure_env_kv "SMEE_BACKEND"  "${SMEE_BACKEND:-}"
+ensure_env_kv "SMEE_FRONTEND" "${SMEE_FRONTEND:-}"
+ensure_env_kv "SMEE_DEVOPS"   "${SMEE_DEVOPS:-}"
+
+# Ensure tokens exist (create defaults if missing)
+if ! grep -q '^JENKINS_WEBHOOK_TOKEN_BACKEND=' "${ENV_FILE}"; then
+  echo 'JENKINS_WEBHOOK_TOKEN_BACKEND=cloudrift-backend' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+if ! grep -q '^JENKINS_WEBHOOK_TOKEN_FRONTEND=' "${ENV_FILE}"; then
+  echo 'JENKINS_WEBHOOK_TOKEN_FRONTEND=cloudrift-frontend' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+if ! grep -q '^JENKINS_WEBHOOK_TOKEN_DEVOPS=' "${ENV_FILE}"; then
+  echo 'JENKINS_WEBHOOK_TOKEN_DEVOPS=cloudrift-devops' | sudo tee -a "${ENV_FILE}" >/dev/null
+fi
+
+TOKEN_BACKEND="$(get_env_val JENKINS_WEBHOOK_TOKEN_BACKEND)";  [ -z "${TOKEN_BACKEND}" ] && TOKEN_BACKEND="cloudrift-backend"
+TOKEN_FRONTEND="$(get_env_val JENKINS_WEBHOOK_TOKEN_FRONTEND)"; [ -z "${TOKEN_FRONTEND}" ] && TOKEN_FRONTEND="cloudrift-frontend"
+TOKEN_DEVOPS="$(get_env_val JENKINS_WEBHOOK_TOKEN_DEVOPS)";    [ -z "${TOKEN_DEVOPS}" ] && TOKEN_DEVOPS="cloudrift-devops"
+
+SMEE_BACKEND_ID="$(get_env_val SMEE_BACKEND)"
+SMEE_FRONTEND_ID="$(get_env_val SMEE_FRONTEND)"
+SMEE_DEVOPS_ID="$(get_env_val SMEE_DEVOPS)"
+
+# Build SMEE_SOURCE_* as full URLs (if IDs present)
+if [ -n "${SMEE_BACKEND_ID}" ]; then
+  ensure_env_kv "SMEE_SOURCE_BACKEND" "https://smee.io/${SMEE_BACKEND_ID}"
+fi
+if [ -n "${SMEE_FRONTEND_ID}" ]; then
+  ensure_env_kv "SMEE_SOURCE_FRONTEND" "https://smee.io/${SMEE_FRONTEND_ID}"
+fi
+if [ -n "${SMEE_DEVOPS_ID}" ]; then
+  ensure_env_kv "SMEE_SOURCE_DEVOPS" "https://smee.io/${SMEE_DEVOPS_ID}"
+fi
+
+# Targets (Generic Webhook Trigger endpoint, tokenized)
+ensure_env_kv "SMEE_TARGET_BACKEND"  "http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_BACKEND}"
+ensure_env_kv "SMEE_TARGET_FRONTEND" "http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_FRONTEND}"
+ensure_env_kv "SMEE_TARGET_DEVOPS"   "http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_DEVOPS}"
+
+# Backwards compatibility: map legacy variables to backend
 if ! grep -q '^SMEE_URL=' "${ENV_FILE}"; then
-  echo 'SMEE_URL=https://smee.io/3kEdRwsh19vXOgv' | sudo tee -a "${ENV_FILE}" >/dev/null
+  if [ -n "${SMEE_BACKEND_ID}" ]; then
+    echo "SMEE_URL=https://smee.io/${SMEE_BACKEND_ID}" | sudo tee -a "${ENV_FILE}" >/dev/null
+  fi
 fi
-
-# Ensure SMEE_SOURCE exists (preferred name). Keep it aligned with SMEE_URL for backwards compatibility.
 if ! grep -q '^SMEE_SOURCE=' "${ENV_FILE}"; then
-  SMEE_URL_VAL="$(grep '^SMEE_URL=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2-)"
-  echo "SMEE_SOURCE=${SMEE_URL_VAL}" | sudo tee -a "${ENV_FILE}" >/dev/null
+  if [ -n "${SMEE_BACKEND_ID}" ]; then
+    echo "SMEE_SOURCE=https://smee.io/${SMEE_BACKEND_ID}" | sudo tee -a "${ENV_FILE}" >/dev/null
+  fi
 fi
-
-# Ensure a webhook token exists for Generic Webhook Trigger (bypasses CSRF/crumb)
-# IMPORTANT: Set the SAME token in the Jenkins job:
-#   backend-pipeline -> Configure -> Build Triggers -> Generic Webhook Trigger -> Token
-if ! grep -q '^JENKINS_WEBHOOK_TOKEN=' "${ENV_FILE}"; then
-  echo 'JENKINS_WEBHOOK_TOKEN=cloudrift-backend' | sudo tee -a "${ENV_FILE}" >/dev/null
-fi
-
-TOKEN_VAL="$(grep '^JENKINS_WEBHOOK_TOKEN=' "${ENV_FILE}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]')"
-if [ -z "${TOKEN_VAL}" ]; then
-  TOKEN_VAL="cloudrift-backend"
-fi
-
-# Ensure SMEE_TARGET exists and points to the correct Jenkins endpoint (NOTE: no /jenkins context path here)
-# Using ?token=... avoids "No valid crumb" CSRF failures.
-SMEE_TARGET_WITH_TOKEN="http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_VAL}"
-
+# Legacy SMEE_TARGET always points to backend token
 if grep -q '^SMEE_TARGET=' "${ENV_FILE}"; then
-  sudo sed -i "s|^SMEE_TARGET=.*|SMEE_TARGET=${SMEE_TARGET_WITH_TOKEN}|" "${ENV_FILE}"
+  sudo sed -i "s|^SMEE_TARGET=.*|SMEE_TARGET=http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_BACKEND}|" "${ENV_FILE}"
 else
-  echo "SMEE_TARGET=${SMEE_TARGET_WITH_TOKEN}" | sudo tee -a "${ENV_FILE}" >/dev/null
+  echo "SMEE_TARGET=http://127.0.0.1:8080/generic-webhook-trigger/invoke?token=${TOKEN_BACKEND}" | sudo tee -a "${ENV_FILE}" >/dev/null
 fi
-
 
 # -------------------------------------------------------------------
 # Node.js + smee-client (GitHub webhook relay)
@@ -255,12 +321,27 @@ fi
 sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
 
 # -------------------------------------------------------------------
-# smee systemd service (reads SMEE_SOURCE/SMEE_TARGET from /home/<user>/.env)
+# smee systemd services (3 relays; all read vars from /home/<user>/.env)
 # -------------------------------------------------------------------
-log "Creating/Updating smee-jenkins.service..."
-cat <<EOF | sudo tee /etc/systemd/system/smee-jenkins.service >/dev/null
+create_smee_service() {
+  # Usage: create_smee_service NAME SOURCE_VAR TARGET_VAR
+  local svc_name="$1"
+  local src_var="$2"
+  local tgt_var="$3"
+  local unit="/etc/systemd/system/${svc_name}.service"
+
+  # Only enable if source exists in env file
+  local src_val
+  src_val="$(get_env_val "${src_var}")"
+  if [ -z "${src_val}" ]; then
+    warn "Skipping ${svc_name}: ${src_var} is empty/missing in ${ENV_FILE}"
+    return 0
+  fi
+
+  log "Creating/Updating ${svc_name}.service..."
+  cat <<EOF | sudo tee "${unit}" >/dev/null
 [Unit]
-Description=CloudRift Smee relay (GitHub webhooks -> local Jenkins)
+Description=CloudRift Smee relay (${svc_name} -> Jenkins)
 After=network.target jenkins.service
 StartLimitIntervalSec=0
 
@@ -268,7 +349,37 @@ StartLimitIntervalSec=0
 Type=simple
 User=${TARGET_USER}
 EnvironmentFile=${ENV_FILE}
-ExecStart=/bin/bash -lc 'exec /usr/bin/smee -u "$SMEE_SOURCE" --target "$SMEE_TARGET"'
+ExecStart=/bin/bash -lc 'exec /usr/bin/smee -u "\$$src_var" --target "\$$tgt_var"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now "${svc_name}" || true
+  sudo systemctl restart "${svc_name}" || true
+}
+
+# Backend relay (legacy name kept for compatibility)
+create_smee_service "smee-jenkins-backend"  "SMEE_SOURCE_BACKEND"  "SMEE_TARGET_BACKEND"
+create_smee_service "smee-jenkins-frontend" "SMEE_SOURCE_FRONTEND" "SMEE_TARGET_FRONTEND"
+create_smee_service "smee-jenkins-devops"   "SMEE_SOURCE_DEVOPS"   "SMEE_TARGET_DEVOPS"
+
+# Keep the old service name too (points to backend legacy vars), so existing automation doesn't break.
+log "Creating/Updating smee-jenkins.service (legacy backend relay)..."
+cat <<EOF | sudo tee /etc/systemd/system/smee-jenkins.service >/dev/null
+[Unit]
+Description=CloudRift Smee relay (legacy backend -> local Jenkins)
+After=network.target jenkins.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=${TARGET_USER}
+EnvironmentFile=${ENV_FILE}
+ExecStart=/bin/bash -lc 'exec /usr/bin/smee -u "\$SMEE_SOURCE" --target "\$SMEE_TARGET"'
 Restart=always
 RestartSec=3
 
@@ -277,7 +388,7 @@ WantedBy=multi-user.target
 EOF
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now smee-jenkins
+sudo systemctl enable --now smee-jenkins || true
 sudo systemctl restart smee-jenkins || true
 
 # -------------------------------------------------------------------

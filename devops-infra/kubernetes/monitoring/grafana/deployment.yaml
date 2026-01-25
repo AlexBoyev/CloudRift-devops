@@ -97,7 +97,7 @@ spec:
               subPath: dashboards.yaml
               readOnly: true
 
-            # FIX: dashboards JSON files must be mounted here (directory mount)
+            # This is the critical fix: mount dashboards ConfigMap as files
             - name: grafana-dashboards
               mountPath: /var/lib/grafana/dashboards
               readOnly: true
@@ -111,7 +111,6 @@ spec:
           configMap:
             name: grafana-dashboards-provider
 
-        # FIX: this must be ConfigMap (NOT emptyDir)
         - name: grafana-dashboards
           configMap:
             name: grafana-dashboards

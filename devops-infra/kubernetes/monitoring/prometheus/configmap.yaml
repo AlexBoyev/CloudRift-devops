@@ -8,8 +8,8 @@ metadata:
 data:
   prometheus.yml: |
     global:
-      scrape_interval: 1h
-      evaluation_interval: 1h
+      scrape_interval: 15s
+      evaluation_interval: 15s
       external_labels:
         cluster: 'aks-data-structures'
         env: 'development'

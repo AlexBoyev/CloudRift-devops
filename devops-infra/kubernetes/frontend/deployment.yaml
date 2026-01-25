@@ -1,6 +1,3 @@
-# Frontend Deployment
-# Enhanced deployment with resource limits, probes, and environment configuration
-
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -25,39 +22,39 @@ spec:
         tier: web
     spec:
       containers:
-      - name: frontend
-        # DYNAMIC TAGGING: Uses env var set by Jenkins
-        image: ui-service:$(FRONTEND_TAG)
-        imagePullPolicy: Always  # Force pull new tag (changed from Never)
-        ports:
-        - containerPort: 80
-          name: http
-        resources:
-          requests:
-            cpu: "50m"
-            memory: "64Mi"
-          limits:
-            cpu: "100m"
-            memory: "128Mi"
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 30
-          periodSeconds: 60
-          timeoutSeconds: 5
-          failureThreshold: 3
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 5
-          failureThreshold: 30
-          periodSeconds: 10
-          timeoutSeconds: 3
-        env:
-        - name: API_URL
-          value: "http://backend-service:5000/api"
-        # NEW: Frontend tag env var - injected by Jenkins
-        - name: FRONTEND_TAG
-          value: "latest"
+        - name: frontend
+          image: ui-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+
+          env:
+            - name: API_URL
+              value: "http://backend-service:5000/api"

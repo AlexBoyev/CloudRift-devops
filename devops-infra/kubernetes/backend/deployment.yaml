@@ -144,12 +144,6 @@ spec:
             - name: SERVICE_NAME
               value: "backend"
 
-            - name: BUILD_SHA
-              value: "unknown"
-
-            - name: BUILD_TIME_UTC
-              value: "unknown"
-
             - name: DEVOPS_SHA
               value: "unknown"
 

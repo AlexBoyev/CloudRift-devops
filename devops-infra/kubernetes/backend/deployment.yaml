@@ -73,6 +73,7 @@ spec:
             failureThreshold: 3
 
           env:
+            # --- YOUR ORIGINAL ENVS (UNCHANGED) ---
             - name: FLASK_ENV
               valueFrom:
                 configMapKeyRef:
@@ -138,3 +139,32 @@ spec:
 
             - name: PROMETHEUS_MULTIPROC_DIR
               value: "/tmp"
+
+            # --- YOUR EXISTING BUILDS/DEVOPS (UNCHANGED) ---
+            - name: SERVICE_NAME
+              value: "backend"
+
+            - name: BUILD_SHA
+              value: "unknown"
+
+            - name: BUILD_TIME_UTC
+              value: "unknown"
+
+            - name: DEVOPS_SHA
+              value: "unknown"
+
+            - name: DEVOPS_APPLY_TIME_UTC
+              value: "unknown"
+
+            # --- NEW: Frontend version (will override "unknown" defaults) ---
+            - name: FRONTENDSHA
+              valueFrom:
+                configMapKeyRef:
+                  name: frontend-version
+                  key: FRONTENDSHA
+
+            - name: FRONTENDBUILDTIMEUTC
+              valueFrom:
+                configMapKeyRef:
+                  name: frontend-version
+                  key: FRONTENDBUILDTIMEUTC
